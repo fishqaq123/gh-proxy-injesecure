@@ -135,9 +135,13 @@ https://your-worker-domain/?compat=1
 📊 与原版 gh-proxy 的对比
 
 · 🔓 原版不支持页面注入 → ✨ InjeSecure 支持非侵入式注入框架
+
 · 🔓 原版完全开放 → 🔐 InjeSecure 新增统一密钥鉴权系统
+
 · ~~🔓 原版 Git Clone 无鉴权 → 🔐 InjeSecure 支持 Git Clone 鉴权~~
+
 · 🔓 原版不支持临时密钥 → ⏳ InjeSecure 支持临时密钥
+
 · 🔓 原版无回滚机制 → ↩️ InjeSecure 支持 ?compat=1 一键回滚
 
 📄 License
