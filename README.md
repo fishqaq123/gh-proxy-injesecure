@@ -12,7 +12,7 @@ InjeSecure 是在 gh-proxy 原版基础上构建的增强版本，主要解决�
 ## ✨ 特性
 
 - 🚀 完整的 GitHub 资源代理：支持 Release、Archive、Raw、Git Clone 等所有 GitHub 资源
-- 🔑 统一密钥鉴权：HTTP 下载（`?key=`）和 Git Clone（`Authorization: Bearer`）使用同一套密钥体系，支持主密钥和临时密钥
+- 🔑 统一密钥鉴权：HTTP 下载（`?key=`）~~和 Git Clone（`Authorization: Bearer`）使用同一套密钥体系，~~支持主密钥和临时密钥
 - 🧩 非侵入式注入框架：支持在 `<body>` 后或 `</head>` 前注入自定义 HTML/CSS/JS，注入失败不影响原页面
 - ☁️ 远程配置支持：注入内容通过 JSON 配置文件远程拉取，无需重新部署 Worker
 - ↩️ 一键回滚兼容模式：访问 `?compat=1` 可瞬间切回原始页面，零风险调试
@@ -138,7 +138,7 @@ https://your-worker-domain/?compat=1
 
 - 🔓 原版不支持页面注入 → ✨ InjeSecure 支持非侵入式注入框架
 - 🔓 原版完全开放 → 🔐 InjeSecure 新增统一密钥鉴权系统
-- 🔓 原版 Git Clone 无鉴权 → 🔐 InjeSecure 支持 Git Clone 鉴权
+-~~ 🔓 原版 Git Clone 无鉴权 → 🔐 InjeSecure 支持 Git Clone 鉴权~~
 - 🔓 原版不支持临时密钥 → ⏳ InjeSecure 支持临时密钥
 - 🔓 原版无回滚机制 → ↩️ InjeSecure 支持 `?compat=1` 一键回滚
 
