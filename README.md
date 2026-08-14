@@ -1,118 +1,156 @@
-# gh-proxy
+你说得对，没有 emoji 确实少了点活力。我重新加上，同时修正内容，保持信息准确。
 
-## 简介
 
-github release、archive以及项目文件的加速项目，支持clone，有Cloudflare Workers无服务器版本以及Python版本
+# ✨ InjeSecure
 
-## 演示
+**InjeSecure — gh-proxy 增强分支 · 注入框架 + 统一鉴权**
 
-[https://gh.api.99988866.xyz/](https://gh.api.99988866.xyz/)
+InjeSecure 是在 gh-proxy 原版基础上构建的增强版本，主要解决两个原版没有覆盖的需求：
 
-演示站为公共服务，如有大规模使用需求请自行部署，演示站有点不堪重负
+1. 🎨 **页面自定义**：在不修改原页面核心代码的前提下，通过非侵入式的注入框架为页面叠加自定义内容（导航栏、样式、统计脚本等）。注入内容与核心逻辑完全解耦，可远程配置、可一键回滚，即使“玩坏”也能通过 `?compat=1` 瞬间恢复原貌。
 
-![imagea272c95887343279.png](https://img.maocdn.cn/img/2021/04/24/imagea272c95887343279.png)
+2. 🔐 **访问鉴权**：原版 gh-proxy 完全开放，任何人知道你的域名就能使用。InjeSecure 新增了一套完整的密钥鉴权系统，统一覆盖 HTTP 下载（`?key=`）和 Git Clone（`Authorization: Bearer`），并支持临时密钥和过期警告。
 
-当然也欢迎[捐赠](#捐赠)以支持作者
 
-## python版本和cf worker版本差异
+## ✨ 特性
 
-- python版本支持进行文件大小限制，超过设定返回原地址 [issue #8](https://github.com/hunshcn/gh-proxy/issues/8)
+- 🚀 完整的 GitHub 资源代理：支持 Release、Archive、Raw、Git Clone 等所有 GitHub 资源
+- 🔑 统一密钥鉴权：HTTP 下载（`?key=`）和 Git Clone（`Authorization: Bearer`）使用同一套密钥体系，支持主密钥和临时密钥
+- 🧩 非侵入式注入框架：支持在 `<body>` 后或 `</head>` 前注入自定义 HTML/CSS/JS，注入失败不影响原页面
+- ☁️ 远程配置支持：注入内容通过 JSON 配置文件远程拉取，无需重新部署 Worker
+- ↩️ 一键回滚兼容模式：访问 `?compat=1` 可瞬间切回原始页面，零风险调试
+- 🇨🇳 中国直连优化：针对中国大陆访问自动禁用缓存，提升国内用户连接体验
 
-- python版本支持特定user/repo 封禁/白名单 以及passby [issue #41](https://github.com/hunshcn/gh-proxy/issues/41)
 
-## 使用
+## 🚀 快速部署（Cloudflare Workers）
 
-直接在copy出来的url前加`https://gh.api.99988866.xyz/`即可
+### 方式一：手动部署
 
-也可以直接访问，在input输入
+1. 登录 Cloudflare Dashboard
+2. 进入 Workers 和 Pages → 创建应用程序 → 创建 Worker
+3. 将 worker.js 中的代码完整复制到编辑器中
+4. 根据下方配置说明修改密钥和注入配置
+5. 点击保存并部署
 
-***大量使用请自行部署，以上域名仅为演示使用。***
+### 方式二：使用 Wrangler CLI
 
-访问私有仓库可以通过
-
-`git clone https://user:TOKEN@ghproxy.com/https://github.com/xxxx/xxxx` [#71](https://github.com/hunshcn/gh-proxy/issues/71)
-
-以下都是合法输入（仅示例，文件不存在）：
-
-- 分支源码：https://github.com/hunshcn/project/archive/master.zip
-
-- release源码：https://github.com/hunshcn/project/archive/v0.1.0.tar.gz
-
-- release文件：https://github.com/hunshcn/project/releases/download/v0.1.0/example.zip
-
-- 分支文件：https://github.com/hunshcn/project/blob/master/filename
-
-- commit文件：https://github.com/hunshcn/project/blob/1111111111111111111111111111/filename
-
-- gist：https://gist.githubusercontent.com/cielpy/351557e6e465c12986419ac5a4dd2568/raw/cmd.py
-
-## cf worker版本部署
-
-首页：https://workers.cloudflare.com
-
-注册，登陆，`Start building`，取一个子域名，`Create a Worker`。
-
-复制 [index.js](https://cdn.jsdelivr.net/gh/hunshcn/gh-proxy@master/index.js)  到左侧代码框，`Save and deploy`。如果正常，右侧应显示首页。
-
-`ASSET_URL`是静态资源的url（实际上就是现在显示出来的那个输入框单页面）
-
-`PREFIX`是前缀，默认（根路径情况为"/"），如果自定义路由为example.com/gh/*，请将PREFIX改为 '/gh/'，注意，少一个杠都会错！
-
-## Python版本部署
-
-### Docker部署
-
-```
-docker run -d --name="gh-proxy-py" \
-  -p 0.0.0.0:80:80 \
-  --restart=always \
-  hunsh/gh-proxy-py:latest
+```bash
+git clone https://github.com/你的用户名/injesecure.git
+cd injesecure
+npm install -g wrangler
+wrangler login
+wrangler deploy
 ```
 
-第一个80是你要暴露出去的端口
 
-### 直接部署
+## ⚙️ 配置说明
 
-安装依赖（请使用python3）
+在 Worker 代码顶部，你可以修改以下配置：
 
-```pip install flask requests```
+### 功能开关
 
-按需求修改`app/main.py`的前几项配置
-
-*注意:* 可能需要在`return Response`前加两行
-```python3
-if 'Transfer-Encoding' in headers:
-    headers.pop('Transfer-Encoding')
+```javascript
+const ENABLE_KEY_AUTH = true   // 是否启用密钥验证（true/false）
+const ENABLE_INJECTION = true  // 是否启用页面注入（true/false）
 ```
 
-### 注意
+### 密钥设置
 
-python版本的机器如果无法正常访问github.io会启动报错，请自行修改静态文件url
+```javascript
+const MY_KEY = 'Set-your-own-key'                    // 主密钥
+const TEMP_KEY_TIME_LIMITED = 'Set-your-own-temp-key' // 临时密钥
+const START_TIME = '2000-01-01 00:00:00'             // 临时密钥生效时间（北京时间）
+const END_TIME = '2000-01-02 00:00:00'               // 临时密钥失效时间（北京时间）
+```
 
-python版本默认走服务器（2021.3.27更新）
+### 注入配置
 
-## Cloudflare Workers计费
+```javascript
+// 远程注入配置文件地址（留空则仅使用回退注入）
+const REMOTE_INJECTION_URL = ''  // 例如：'https://raw.githubusercontent.com/你的用户名/仓库名/main/injections.json'
+```
 
-到 `overview` 页面可参看使用情况。免费版每天有 10 万次免费请求，并且有每分钟1000次请求的限制。
+远程配置文件格式示例：
 
-如果不够用，可升级到 $5 的高级版本，每月可用 1000 万次请求（超出部分 $0.5/百万次请求）。
+```json
+{
+    "version": "1.0",
+    "injections": [
+        {
+            "position": "afterBody",
+            "html": "<style>body { background: #f6f8fa; }</style>"
+        }
+    ]
+}
+```
 
-## Changelog
+注入位置说明：
 
-* 2020.04.10 增加对`raw.githubusercontent.com`文件的支持
-* 2020.04.09 增加Python版本（使用Flask）
-* 2020.03.23 新增了clone的支持
-* 2020.03.22 初始版本
+- `afterBody`：在 `<body>` 标签之后插入
+- `beforeHeadEnd`：在 `</head>` 标签之前插入
 
-## 链接
+### 回退注入
 
-[我的博客](https://hunsh.net)
+当远程拉取失败或未配置时，使用 `FALLBACK_INJECTIONS` 中的内容。默认在右上角显示“注入生效”提示。
 
-## 参考
 
-[jsproxy](https://github.com/EtherDream/jsproxy/)
+## 🔑 使用方式
 
-## 捐赠
+### 普通下载
 
-![wx.png](https://img.maocdn.cn/img/2021/04/24/image.md.png)
-![ali.png](https://www.helloimg.com/images/2021/04/24/BK9vmb.md.png)
+```bash
+wget "https://your-worker-domain/github.com/用户名/仓库名/...?key=你的主密钥"
+```
+
+### Git Clone
+
+通过 Header 传递密钥（推荐）：
+
+```bash
+git -c http.extraheader="Authorization: Bearer 你的主密钥" clone https://your-worker-domain/https://github.com/用户名/仓库名.git
+```
+
+配置 Git 全局自动携带密钥：
+
+```bash
+git config --global http.extraheader "Authorization: Bearer 你的主密钥"
+git clone https://your-worker-domain/https://github.com/用户名/仓库名.git
+```
+
+取消全局配置：
+
+```bash
+git config --global --unset http.extraheader
+```
+
+### 兼容模式
+
+访问以下地址可查看未注入的原始页面：
+
+```
+https://your-worker-domain/?compat=1
+```
+
+### 临时密钥警告
+
+当临时密钥剩余不足 3 天时，响应头中会包含 `X-Warning: Key expires in X days`，便于脚本自动监测。
+
+
+## 📊 与原版 gh-proxy 的对比
+
+- 🔓 原版不支持页面注入 → ✨ InjeSecure 支持非侵入式注入框架
+- 🔓 原版完全开放 → 🔐 InjeSecure 新增统一密钥鉴权系统
+- 🔓 原版 Git Clone 无鉴权 → 🔐 InjeSecure 支持 Git Clone 鉴权
+- 🔓 原版不支持临时密钥 → ⏳ InjeSecure 支持临时密钥
+- 🔓 原版无回滚机制 → ↩️ InjeSecure 支持 `?compat=1` 一键回滚
+
+
+## 📄 License
+
+MIT License
+
+
+## 🙏 致谢
+
+- 原版 gh-proxy 项目：[hunshcn/gh-proxy](https://github.com/hunshcn/gh-proxy)
+- Cloudflare Workers 提供边缘计算基础设施
