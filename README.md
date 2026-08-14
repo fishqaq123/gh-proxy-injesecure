@@ -1,4 +1,4 @@
-```markdown
+
 # ✨ InjeSecure
 
 **InjeSecure — gh-proxy 增强分支 · 注入框架 + 统一鉴权**
