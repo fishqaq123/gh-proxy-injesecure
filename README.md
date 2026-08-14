@@ -1,25 +1,29 @@
-✨ InjeSecure
+```markdown
+# ✨ InjeSecure
 
-InjeSecure — gh-proxy 增强分支 · 注入框架 + 统一鉴权
+**InjeSecure — gh-proxy 增强分支 · 注入框架 + 统一鉴权**
 
 InjeSecure 是在 gh-proxy 原版基础上构建的增强版本，主要解决两个原版没有覆盖的需求：
 
-1. 🎨 页面自定义：在不修改原页面核心代码的前提下，通过非侵入式的注入框架为页面叠加自定义内容（导航栏、样式、统计脚本等）。注入内容与核心逻辑完全解耦，可远程配置、可一键回滚，即使“玩坏”也能通过 ?compat=1 瞬间恢复原貌。
-2. 🔐 访问鉴权：原版 gh-proxy 完全开放，任何人知道你的域名就能使用。InjeSecure 新增了一套完整的密钥鉴权系统，统一覆盖 HTTP 下载（?key=）和 Git Clone（Authorization: Bearer），并支持临时密钥和过期警告。
+1. 🎨 **页面自定义**：在不修改原页面核心代码的前提下，通过非侵入式的注入框架为页面叠加自定义内容（导航栏、样式、统计脚本等）。注入内容与核心逻辑完全解耦，可远程配置、可一键回滚，即使“玩坏”也能通过 `?compat=1` 瞬间恢复原貌。
 
-✨ 特性
+2. 🔐 **访问鉴权**：原版 gh-proxy 完全开放，任何人知道你的域名就能使用。InjeSecure 新增了一套完整的密钥鉴权系统，统一覆盖 HTTP 下载（`?key=`）和 Git Clone（`Authorization: Bearer`），并支持临时密钥和过期警告。
 
-· 🚀 完整的 GitHub 资源代理：支持 Release、Archive、Raw、Git Clone 等所有 GitHub 资源
-· 🔑 统一密钥鉴权：HTTP 下载（?key=）~~和 Git Clone（Authorization: Bearer）使用同一套密钥体系，~~支持主密钥和临时密钥
-· 🧩 非侵入式注入框架：支持在 <body> 后或 </head> 前注入自定义 HTML/CSS/JS，注入失败不影响原页面
-· ☁️ 远程配置支持：注入内容通过 JSON 配置文件远程拉取，无需重新部署 Worker
-· ↩️ 一键回滚兼容模式：访问 ?compat=1 可瞬间切回原始页面，零风险调试
-· 🇨🇳 中国直连优化：针对中国大陆访问自动禁用缓存，提升国内用户连接体验
-· 注：尚未支持python版本
 
-🚀 快速部署（Cloudflare Workers）
+## ✨ 特性
 
-方式一：手动部署
+- 🚀 完整的 GitHub 资源代理：支持 Release、Archive、Raw、Git Clone 等所有 GitHub 资源
+- 🔑 统一密钥鉴权：HTTP 下载（`?key=`）~~和 Git Clone（`Authorization: Bearer`）使用同一套密钥体系，~~支持主密钥和临时密钥
+- 🧩 非侵入式注入框架：支持在 `<body>` 后或 `</head>` 前注入自定义 HTML/CSS/JS，注入失败不影响原页面
+- ☁️ 远程配置支持：注入内容通过 JSON 配置文件远程拉取，无需重新部署 Worker
+- ↩️ 一键回滚兼容模式：访问 `?compat=1` 可瞬间切回原始页面，零风险调试
+- 🇨🇳 中国直连优化：针对中国大陆访问自动禁用缓存，提升国内用户连接体验
+- 注：尚未支持python版本
+
+
+## 🚀 快速部署（Cloudflare Workers）
+
+### 方式一：手动部署
 
 1. 登录 Cloudflare Dashboard
 2. 进入 Workers 和 Pages → 创建应用程序 → 创建 Worker
@@ -27,7 +31,7 @@ InjeSecure 是在 gh-proxy 原版基础上构建的增强版本，主要解决�
 4. 根据下方配置说明修改密钥和注入配置
 5. 点击保存并部署
 
-方式二：使用 Wrangler CLI
+### 方式二：使用 Wrangler CLI
 
 ```bash
 git clone https://github.com/你的用户名/injesecure.git
@@ -144,3 +148,6 @@ MIT License
 
 · 原版 gh-proxy 项目：hunshcn/gh-proxy
 · Cloudflare Workers 提供边缘计算基础设施
+
+```
+```
