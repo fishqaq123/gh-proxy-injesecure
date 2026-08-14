@@ -1,6 +1,3 @@
-你说得对，没有 emoji 确实少了点活力。我重新加上，同时修正内容，保持信息准确。
-
-
 # ✨ InjeSecure
 
 **InjeSecure — gh-proxy 增强分支 · 注入框架 + 统一鉴权**
