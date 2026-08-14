@@ -1,11 +1,20 @@
 'use strict'
 
 /**
- * static files (404.html, sw.js, conf.js)
+ * ============================================================
+ *  InjeSecure — gh-proxy 增强分支 · 注入框架 + 统一鉴权
+ *  基于 gh-proxy 原版，增加注入框架、统一鉴权、远程配置支持
+ * ============================================================
+ *
+ *  static files (404.html, sw.js, conf.js)
  */
+
+// ============================================================
+// 静态资源地址（原项目）
+// ============================================================
 const ASSET_URL = 'https://hunshcn.github.io/gh-proxy/'
-// 前缀
 const PREFIX = '/'
+
 // jsDelivr 开关
 const Config = {
     jsdelivr: 0
@@ -24,7 +33,7 @@ const PREFLIGHT_INIT = {
 }
 
 // ============================================================
-// 功能开关         目前git clone无保护
+// 功能开关
 // ============================================================
 // 是否启用 KEY 鉴权（true = 启用，false = 禁用）
 const ENABLE_KEY_AUTH = true
@@ -33,9 +42,8 @@ const ENABLE_KEY_AUTH = true
 const ENABLE_INJECTION = true
 
 // 远程注入配置文件地址（请替换为你的 GitHub 仓库地址）
-// 如果 ENABLE_INJECTION = false，此配置无效
-const INJECTION_CONFIG_URL = 'https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/injections.json'//这里是默认注入配置网址
-// ============================================================
+// 如果 ENABLE_INJECTION = false，此配置无效  此链接为仓库默认注入地址
+const INJECTION_CONFIG_URL = 'https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/injections.json'
 
 // ============================================================
 // KEY 配置区域（仅当 ENABLE_KEY_AUTH = true 时生效）
@@ -44,12 +52,11 @@ const INJECTION_CONFIG_URL = 'https://raw.githubusercontent.com/fishqaq123/gh-pr
 const MY_KEY = 'Set-your-own-key'
 
 // 临时 KEY（请替换为你自己的密钥）
-const TEMP_KEY_TIME_LIMITED = 'Set-your-own-temp-key'
+const TEMP_KEY_TIME_LIMITED = 'Set-your-own-key'
 
 // 临时 KEY 的有效期（北京时间）
 const START_TIME = '2000-01-01 00:00:00'
 const END_TIME = '2000-01-01 00:00:00'
-// ============================================================
 
 // ============================================================
 // 最小回退注入配置（当远程注入拉取失败或 ENABLE_INJECTION = false 时使用）
@@ -91,14 +98,20 @@ const FALLBACK_INJECTIONS = [
 `
     }
 ]
-// ============================================================
 
+// ============================================================
+// 路由正则表达式
+// ============================================================
 const exp1 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:releases|archive)\/.*$/i
 const exp2 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:blob|raw)\/.*$/i
 const exp3 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:info|git-).*$/i
 const exp4 = /^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+?\/.+$/i
 const exp5 = /^(?:https?:\/\/)?gist\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+$/i
 const exp6 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/tags.*$/i
+
+// ============================================================
+// 工具函数
+// ============================================================
 
 function makeRes(body, status = 200, headers = {}) {
     headers['access-control-allow-origin'] = '*'
@@ -146,14 +159,14 @@ function checkTimeLimitedKey() {
     const now = Date.now()
     const start = beijingToUTC(START_TIME)
     const end = beijingToUTC(END_TIME)
-    
+
     if (now < start) {
         return { valid: false, reason: 'not_started' }
     }
     if (now > end) {
         return { valid: false, reason: 'expired' }
     }
-    
+
     const remainingMs = end - now
     const remainingDays = remainingMs / (1000 * 60 * 60 * 24)
     return { valid: true, remainingDays }
@@ -169,7 +182,7 @@ function validateKey(key) {
     if (key === MY_KEY) {
         return { valid: true }
     }
-    
+
     // 检查临时 KEY
     if (key === TEMP_KEY_TIME_LIMITED) {
         const timeCheck = checkTimeLimitedKey()
@@ -185,7 +198,7 @@ function validateKey(key) {
         }
         return { valid: false, status: 403, error: 'Forbidden' }
     }
-    
+
     // 密钥无效
     return {
         valid: false,
@@ -202,7 +215,7 @@ function validateKey(key) {
  */
 function applyInjections(html, injections) {
     let result = html
-    
+
     for (const inj of injections) {
         switch (inj.position) {
             case 'afterBody':
@@ -215,7 +228,7 @@ function applyInjections(html, injections) {
                 break
         }
     }
-    
+
     return result
 }
 
@@ -230,13 +243,13 @@ async function fetchRemoteInjections() {
                 'User-Agent': 'Cloudflare-Worker'
             }
         })
-        
+
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`)
         }
-        
+
         const data = await response.json()
-        
+
         if (data && Array.isArray(data.injections)) {
             return data.injections
         } else {
@@ -247,6 +260,10 @@ async function fetchRemoteInjections() {
         return null
     }
 }
+
+// ============================================================
+// 主请求处理器
+// ============================================================
 
 async function fetchHandler(e) {
     const req = e.request
@@ -267,27 +284,27 @@ async function fetchHandler(e) {
         if (urlObj.searchParams.has('compat')) {
             return fetch(ASSET_URL)
         }
-        
+
         // 如果注入功能已禁用，直接返回上游页面
         if (!ENABLE_INJECTION) {
             return fetch(ASSET_URL)
         }
-        
+
         // 尝试拉取远程注入配置
         try {
             remoteInjections = await fetchRemoteInjections()
         } catch (e) {
             // 拉取失败，使用降级方案
         }
-        
+
         const resp = await fetch(ASSET_URL)
         const html = await resp.text()
-        const injections = (remoteInjections && Array.isArray(remoteInjections)) 
-            ? remoteInjections 
+        const injections = (remoteInjections && Array.isArray(remoteInjections))
+            ? remoteInjections
             : FALLBACK_INJECTIONS
         const injectedHtml = applyInjections(html, injections)
         return new Response(injectedHtml, {
-            headers: { 
+            headers: {
                 'Content-Type': 'text/html; charset=UTF-8',
                 'Cache-Control': 'no-cache, no-store, must-revalidate',
                 'access-control-allow-origin': '*'
@@ -319,103 +336,199 @@ async function fetchHandler(e) {
     }
 }
 
+// ============================================================
+// HTTP 处理器（鉴权 + 路由）
+// ============================================================
+
 function httpHandler(req, pathname) {
     const reqHdrRaw = req.headers
 
     // CORS preflight
-    if (req.method === 'OPTIONS' && reqHdrRaw.has('access-control-request-headers')) {
+    if (
+        req.method === 'OPTIONS' &&
+        reqHdrRaw.has('access-control-request-headers')
+    ) {
         return new Response(null, PREFLIGHT_INIT)
     }
-
-    const reqHdrNew = new Headers(reqHdrRaw)
 
     let urlStr = pathname
 
     // 白名单
     let flag = !Boolean(whiteList.length)
+
     for (let i of whiteList) {
         if (urlStr.includes(i)) {
             flag = true
             break
         }
     }
+
     if (!flag) {
-        return new Response("blocked", { status: 403 })
+        return new Response('blocked', {
+            status: 403
+        })
     }
 
     // ============================================================
-    // 密钥鉴权（仅当 ENABLE_KEY_AUTH = true 时生效）
+    // KEY 鉴权
     // ============================================================
+    let authenticatedByBasic = false
+
     if (ENABLE_KEY_AUTH) {
         let key = null
-        
-        // 1. 尝试从 Authorization: Bearer 头提取
         const authHeader = reqHdrRaw.get('Authorization')
-        if (authHeader && authHeader.startsWith('Bearer ')) {
-            key = authHeader.slice(7).trim()
+
+        // ========================================================
+        // 1. Bearer Auth
+        // ========================================================
+        if (authHeader && /^Bearer\s+/i.test(authHeader)) {
+            key = authHeader.replace(/^Bearer\s+/i, '').trim()
         }
 
-        // 2. 如果没有 Header，尝试从 URL 参数提取
-        if (!key) {
-            const url = new URL(req.url)
-            const urlKey = url.searchParams.get('key')
-            if (urlKey) {
-                key = urlKey
-                // 删除 key 参数防止传到 GitHub
-                url.searchParams.delete('key')
+        // ========================================================
+        // 2. Basic Auth
+        // Git 兼容模式：
+        //   username = 任意
+        //   password = GHProxy KEY
+        // ========================================================
+        if (
+            !key &&
+            authHeader &&
+            /^Basic\s+/i.test(authHeader)
+        ) {
+            try {
+                const encoded = authHeader.replace(/^Basic\s+/i, '').trim()
+                const decoded = atob(encoded)
+                const separator = decoded.indexOf(':')
+
+                if (separator !== -1) {
+                    // 用户名忽略
+                    // 密码作为 KEY
+                    key = decoded.slice(separator + 1)
+                    authenticatedByBasic = true
+                }
+            } catch (e) {
+                console.error('Basic Auth parse failed:', e)
+                key = null
             }
         }
 
-        // 检查是否为 Git 请求（用于决定是否返回 WWW-Authenticate）
+        // ========================================================
+        // 3. URL ?key=
+        // ========================================================
+        if (!key) {
+            const url = new URL(req.url)
+            const urlKey = url.searchParams.get('key')
+
+            if (urlKey) {
+                key = urlKey
+            }
+        }
+
+        // ========================================================
+        // Git 请求识别
+        // ========================================================
         const isGit =
+            urlStr.includes('.git') ||
             urlStr.includes('git-upload-pack') ||
             urlStr.includes('git-receive-pack') ||
-            urlStr.endsWith('.git')
+            urlStr.includes('/info/refs')
 
-        // 如果没有提供密钥
+        // ========================================================
+        // 没有 KEY
+        // ========================================================
         if (!key) {
             if (isGit) {
-                return new Response('Unauthorized: 请通过 "Authorization: Bearer <key>" 提供密钥', {
-                    status: 401,
-                    headers: {
-                        'WWW-Authenticate': 'Bearer realm="GitHub Proxy"',
-                        'Content-Type': 'text/plain;charset=UTF-8'
+                return new Response(
+                    'Unauthorized: Git authentication required',
+                    {
+                        status: 401,
+                        headers: {
+                            'WWW-Authenticate': 'Basic realm="GitHub Proxy"',
+                            'Content-Type': 'text/plain;charset=UTF-8'
+                        }
                     }
-                })
-            } else {
-                return new Response('Forbidden: 缺少 key 参数', {
+                )
+            }
+
+            return new Response(
+                'Forbidden: 缺少 key 参数',
+                {
                     status: 403,
                     headers: {
                         'Content-Type': 'text/plain;charset=UTF-8'
                     }
-                })
-            }
+                }
+            )
         }
 
-        // 调用统一校验函数
+        // ========================================================
+        // KEY 验证
+        // ========================================================
         const validationResult = validateKey(key)
-        
+
         if (!validationResult.valid) {
-            return new Response(validationResult.error, {
-                status: validationResult.status,
-                headers: validationResult.headers || {}
-            })
+            return new Response(
+                validationResult.error,
+                {
+                    status: validationResult.status || 403,
+                    headers: validationResult.headers || {}
+                }
+            )
         }
 
-        // 如果有警告头（临时 KEY 即将过期），添加到请求头中
+        // ========================================================
+        // 临时 KEY 警告（仅记录，不向上游泄露）
+        // ========================================================
         if (validationResult.warning) {
-            reqHdrNew.set('X-Warning', validationResult.warning)
+            // 这里暂时不放进 GitHub 请求头
+            // 避免任何鉴权相关信息向上游泄露
         }
     }
-    // ============================================================
 
-    // ====== 原逻辑继续 ======
+    // ============================================================
+    // 构造真正发往 GitHub 的请求头
+    //
+    // 注意：
+    // 不再直接使用 req.headers
+    // 明确禁止 Authorization / Proxy-Authorization
+    // ============================================================
+    const reqHdrNew = new Headers()
+
+    for (const [name, value] of reqHdrRaw.entries()) {
+        const lowerName = name.toLowerCase()
+
+        if (
+            lowerName === 'authorization' ||
+            lowerName === 'proxy-authorization'
+        ) {
+            continue
+        }
+
+        reqHdrNew.set(name, value)
+    }
+
+    // ============================================================
+    // URL 处理
+    // ============================================================
     if (urlStr.search(/^https?:\/\//) !== 0) {
         urlStr = 'https://' + urlStr
     }
 
     const urlObj = newUrl(urlStr)
 
+    if (!urlObj) {
+        return new Response(
+            'Invalid URL',
+            {
+                status: 400
+            }
+        )
+    }
+
+    // ============================================================
+    // 发往 GitHub
+    // ============================================================
     const reqInit = {
         method: req.method,
         headers: reqHdrNew,
@@ -426,6 +539,10 @@ function httpHandler(req, pathname) {
     return proxy(urlObj, reqInit, req)
 }
 
+// ============================================================
+// 代理函数
+// ============================================================
+
 async function proxy(urlObj, reqInit, originalReq) {
     const res = await fetch(urlObj.href, reqInit)
     const resHdrOld = res.headers
@@ -435,13 +552,14 @@ async function proxy(urlObj, reqInit, originalReq) {
 
     if (resHdrNew.has('location')) {
         let _location = resHdrNew.get('location')
-        if (checkUrl(_location))
+        if (checkUrl(_location)) {
             resHdrNew.set('location', PREFIX + _location)
-        else {
+        } else {
             reqInit.redirect = 'follow'
             return proxy(newUrl(_location), reqInit, originalReq)
         }
     }
+
     resHdrNew.set('access-control-expose-headers', '*')
     resHdrNew.set('access-control-allow-origin', '*')
 
