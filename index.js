@@ -30,7 +30,7 @@ const END_TIME = '2000-01-02 00:00:00'               // 临时密钥失效结束
 
 // ==================== 注入配置 ====================
 // 远程注入配置文件地址（留空则禁用远程拉取，仅使用回退注入）
-const REMOTE_INJECTION_URL = ''  // 例如：'https://raw.githubusercontent.com/你的用户名/仓库名/main/injections.json'
+const REMOTE_INJECTION_URL = 'https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/main/injections.json'  // 此处是使用当前仓库的默认配置，例如：'https://raw.githubusercontent.com/你的用户名/仓库名/main/injections.json'
 
 // 回退注入（当远程拉取失败或未配置时使用）
 // 注意：这里默认只显示一个简单的提示，你可以自行修改
