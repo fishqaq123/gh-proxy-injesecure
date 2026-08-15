@@ -1,5 +1,4 @@
-
-# ✨ InjeSecure
+l# ✨ InjeSecure
 
 **InjeSecure — gh-proxy 增强分支 · 注入框架 + 统一鉴权**
 
@@ -13,12 +12,12 @@ InjeSecure 是在 gh-proxy 原版基础上构建的增强版本，主要解决�
 ## ✨ 特性
 
 - 🚀 完整的 GitHub 资源代理：支持 Release、Archive、Raw、Git Clone 等所有 GitHub 资源
-- 🔑 统一密钥鉴权：HTTP 下载（`?key=`）和 Git Clone（`Authorization: Bearer`）使用同一套密钥体系，支持主密钥和临时密钥
+- 🔑 统一密钥鉴权：HTTP 下载（`?key=`）和 Git Clone（`Basic Authorization`）使用同一套密钥体系，支持主密钥和临时密钥
 - 🧩 非侵入式注入框架：支持在 `<body>` 后或 `</head>` 前注入自定义 HTML/CSS/JS，注入失败不影响原页面
 - ☁️ 远程配置支持：注入内容通过 JSON 配置文件远程拉取，无需重新部署 Worker
 - ↩️ 一键回滚兼容模式：访问 `?compat=1` 可瞬间切回原始页面，零风险调试
 - 🇨🇳 中国直连优化：针对中国大陆访问自动禁用缓存，提升国内用户连接体验
-- 注：尚未支持python版本
+- 注：尚未支持python版本(正在进行中）
 
 
 ## 🚀 快速部署（Cloudflare Workers）
@@ -104,10 +103,10 @@ Git Clone
 传递密钥：
 
 ```bash
-git clone https://username:your_key@your-worker-domain/https://github.com/用户名/仓库名.git
+git clone https://your-worker-domain/https://github.com/用户名/仓库名.git
 
-//注意：此处用户名填与不填均无效，不会进入权限鉴定
-//当然，你也可以不在前面加上username:your_key@，之后按默认git流程会自动询问（推荐此方法，这样不会在你的.bash_history留下痕迹）
+//注意：之后会按流程请求用户名与密码，用户名随意，密码就是key，用户名不会进入鉴权逻辑
+//当然，你也可以在前面加上username:your_key@（不推荐此方法，这样会在你的.bash_history留下key痕迹）
 ```
 兼容模式
 
