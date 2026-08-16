@@ -15,11 +15,11 @@ node = None
 request_id = 0
 responses = {}
 
-# 日志文件
+# Log file
 LOG_FILE = "server.log"
 
 class Tee:
-    """同时输出到控制台和文件"""
+    """Output to both console and file"""
     def __init__(self, filename, mode='a'):
         self.file = open(filename, mode, encoding='utf-8')
         self.stdout = sys.stdout
@@ -39,29 +39,29 @@ class Tee:
         self.file.close()
 
 def log_message(msg):
-    """写入日志到文件并输出到控制台"""
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    log_entry = f"[{timestamp}] {msg}"
-    print(log_entry)  # 同时输出到控制台
+    """Write log to file and console"""
+    timestamp = time.strftime("%m-%d %H:%M:%S")
+    log_entry = f"[{timestamp}][Worker-1-main] {msg}"
+    print(log_entry)
 
 def download_file(url, filename):
-    """从指定URL下载文件"""
+    """Download file from URL"""
     try:
-        log_message(f"正在下载 {filename} from {url}")
+        log_message(f"Downloading {filename} from {url}")
         req = urllib.request.Request(url)
         req.add_header('User-Agent', 'Mozilla/5.0')
         with urllib.request.urlopen(req, timeout=30) as response:
             content = response.read().decode('utf-8', errors='ignore')
             with open(filename, "w", encoding="utf-8") as f:
                 f.write(content)
-            log_message(f"✅ 成功下载 {filename}")
+            log_message(f"Successfully downloaded {filename}")
             return True
     except Exception as e:
-        log_message(f"❌ 下载 {filename} 失败: {e}")
+        log_message(f"Failed to download {filename}: {e}")
         return False
 
 def check_and_download_files():
-    """检查并下载缺失的文件"""
+    """Check and download missing files"""
     files_needed = [
         ("runtime.js", "https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/runtime/runtime.js"),
         ("index.js", "https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/index.js")
@@ -69,24 +69,30 @@ def check_and_download_files():
     
     all_ok = True
     for filename, url in files_needed:
-        if not os.path.exists(filename):
-            log_message(f"⚠️ 文件 {filename} 不存在，开始下载...")
+        if os.path.exists(filename) and os.path.getsize(filename) > 0:
+            log_message(f"File {filename} exists and is valid")
+        else:
+            if os.path.exists(filename):
+                log_message(f"File {filename} exists but is empty or corrupted, re-downloading...")
+            else:
+                log_message(f"File {filename} does not exist, downloading...")
             if not download_file(url, filename):
                 all_ok = False
-        else:
-            log_message(f"✅ 文件 {filename} 已存在")
-    
     return all_ok
 
 def start_node():
     global node
 
-    # 检查并下载文件
     if not check_and_download_files():
-        log_message("❌ 文件下载失败，程序退出")
+        log_message("  File download failed. Please follow these steps:")
+        log_message("  > 1.Visit https://github.com/fishqaq123/gh-proxy-injesecure")
+        log_message("  > 2.Download runtime.js and index.js")
+        log_message("  > 3.Place both files in the current working directory")
+        log_message("  > 4.Re-start the program")
+        log_message("Now exiting.")
         sys.exit(1)
 
-    log_message("🚀 启动 Node.js 进程...")
+    log_message("Starting Node.js process...")
     node = subprocess.Popen(
         [
             "node",
@@ -153,10 +159,10 @@ def handle_node(msg):
                     "headers": dict(r.headers),
                     "body": body
                 })
-                log_message(f"[fetch] ✅ 完成 {msg['url']} status={r.status}")
+                log_message(f"[fetch] Completed {msg['url']} status={r.status}")
 
         except Exception as e:
-            log_message(f"[fetch] ❌ 错误 {msg['url']}: {e}")
+            log_message(f"[fetch] Error {msg['url']}: {e}")
             send_node({
                 "type": "fetch_response",
                 "id": msg["id"],
@@ -187,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
             "headers": {}
         })
 
-        log_message(f"[HTTP] ➡️  GET {self.path} id={rid}")
+        log_message(f"[HTTP] GET {self.path} id={rid}")
 
         while responses[rid] is None:
             pass
@@ -200,26 +206,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(result["body"].encode())
 
-        log_message(f"[HTTP] ⬅️  响应 {self.path} status={result['status']}")
+        log_message(f"[HTTP] Response {self.path} status={result['status']}")
 
     def log_message(self, *args):
         pass
 
 if __name__ == "__main__":
-    # 重定向输出，同时输出到控制台和文件
     tee = Tee(LOG_FILE, 'a')
     sys.stdout = tee
     sys.stderr = tee
 
     log_message("=" * 60)
-    log_message("🌟 服务器启动")
+    log_message("Server starting")
     log_message("=" * 60)
     
     start_node()
 
-    log_message("✅ Worker 运行在 :8080")
-    print("✅ Worker 运行在 :8080")
-    print("📝 日志同时输出到控制台和 server.log")
+    log_message("Worker running on :8080")
+    print("Worker running on :8080")
+    print("Logs are written to both console and server.log")
 
     try:
         HTTPServer(
@@ -227,10 +232,10 @@ if __name__ == "__main__":
             Handler
         ).serve_forever()
     except KeyboardInterrupt:
-        log_message("\n⚠️ 服务器被用户中断")
-        print("\n⚠️ 服务器停止")
+        log_message("\nServer interrupted by user")
+        print("\nServer stopped")
     except Exception as e:
-        log_message(f"❌ 服务器异常: {e}")
-        print(f"❌ 错误: {e}")
+        log_message(f"Server error: {e}")
+        print(f"Error: {e}")
     finally:
         tee.close()
