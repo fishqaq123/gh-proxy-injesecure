@@ -8,7 +8,7 @@ import threading
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.ini")
 INJECTION_FILE = os.path.join(BASE_DIR, "injections.json")
-DEFAULT_URL = "'https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/injections.json'"
+DEFAULT_URL = "https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/injections.json"
 
 CP_VERSION = "SnapShot08171104.patch01"
 
