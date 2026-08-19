@@ -299,6 +299,87 @@ def update_index_js_config():
             )
             log_message(f"Updated INJECTION_CONFIG_URL = {injection_url}")
         
+        # ====== 更新 whiteList ======
+        if 'whitelist' in config_data:
+            whitelist_raw = config_data['whitelist'].strip()
+            
+            # 如果 whitelist 为空或只有空白字符，设置为空数组
+            if not whitelist_raw:
+                content = re.sub(
+                    r"(const whiteList = )\[[^\]]*\]",
+                    r"\1[]",
+                    content
+                )
+                log_message("Updated whiteList: [] (empty - allow all)")
+            else:
+                # 尝试解析为 JSON 数组
+                if whitelist_raw.startswith('[') and whitelist_raw.endswith(']'):
+                    try:
+                        whitelist_items = json.loads(whitelist_raw)
+                        if isinstance(whitelist_items, list):
+                            # 过滤掉空字符串
+                            whitelist_items = [item for item in whitelist_items if item and item.strip()]
+                            if whitelist_items:
+                                whitelist_str = ', '.join([f"'{item}'" for item in whitelist_items])
+                                content = re.sub(
+                                    r"(const whiteList = )\[[^\]]*\]",
+                                    r"\1[" + whitelist_str + r"]",
+                                    content
+                                )
+                                log_message(f"Updated whiteList (JSON array): {whitelist_items}")
+                            else:
+                                # 所有项都是空字符串，设置为空数组
+                                content = re.sub(
+                                    r"(const whiteList = )\[[^\]]*\]",
+                                    r"\1[]",
+                                    content
+                                )
+                                log_message("Updated whiteList: [] (empty after filtering)")
+                        else:
+                            log_message(f"[WARN] whitelist is not a list: {whitelist_items}")
+                    except json.JSONDecodeError:
+                        log_message(f"[WARN] Failed to parse whitelist as JSON: {whitelist_raw}")
+                        # 尝试按逗号分割
+                        whitelist_items = [item.strip() for item in whitelist_raw.split(',') if item.strip()]
+                        if whitelist_items:
+                            whitelist_str = ', '.join([f"'{item}'" for item in whitelist_items])
+                            content = re.sub(
+                                r"(const whiteList = )\[[^\]]*\]",
+                                r"\1[" + whitelist_str + r"]",
+                                content
+                            )
+                            log_message(f"Updated whiteList (comma-separated): {whitelist_items}")
+                        else:
+                            # 分割后为空，设置为空数组
+                            content = re.sub(
+                                r"(const whiteList = )\[[^\]]*\]",
+                                r"\1[]",
+                                content
+                            )
+                            log_message("Updated whiteList: [] (empty after parsing)")
+                else:
+                    # 逗号分隔格式: owner/repo1, owner/repo2
+                    whitelist_items = [item.strip() for item in whitelist_raw.split(',') if item.strip()]
+                    if whitelist_items:
+                        whitelist_str = ', '.join([f"'{item}'" for item in whitelist_items])
+                        content = re.sub(
+                            r"(const whiteList = )\[[^\]]*\]",
+                            r"\1[" + whitelist_str + r"]",
+                            content
+                        )
+                        log_message(f"Updated whiteList (comma-separated): {whitelist_items}")
+                    else:
+                        # 分割后为空，设置为空数组
+                        content = re.sub(
+                            r"(const whiteList = )\[[^\]]*\]",
+                            r"\1[]",
+                            content
+                        )
+                        log_message("Updated whiteList: [] (empty after parsing)")
+        else:
+            # 如果配置中没有 whitelist，保持默认空数组
+            log_message("No whitelist config found, keeping default (allow all)")
+        
         # Write updated content back
         with open(index_js_path, 'w', encoding='utf-8') as f:
             f.write(content)
@@ -338,11 +419,22 @@ def read_config():
         # Read all configuration from ConfigProvider section
         if config.has_section('ConfigProvider'):
             for key, value in config.items('ConfigProvider'):
-                config_data[key] = value
-                log_message(f"Read config: {key} = {value}")
+                # 如果 config_data 中已存在该键（通过 set 命令设置），不覆盖
+                if key not in config_data:
+                    config_data[key] = value
+                    log_message(f"Read config: {key} = {value}")
+                else:
+                    log_message(f"Config {key} already set via console, keeping value: {config_data[key]}")
             
-            # Read main_working_port
+            # Read main_working_port - 优先使用 config_data 中的值
             if 'main_working_port' in config_data:
+                try:
+                    main_port = int(config_data['main_working_port'])
+                    log_message(f"Using main_working_port from config_data: {main_port}")
+                except ValueError:
+                    log_message(f"[ERROR] Invalid main_working_port in config_data, using default {DEFAULT_MAIN_PORT}")
+                    main_port = DEFAULT_MAIN_PORT
+            elif 'main_working_port' in config_data:
                 try:
                     main_port = int(config_data['main_working_port'])
                     log_message(f"Set main_working_port: {main_port}")
@@ -353,8 +445,15 @@ def read_config():
                 log_message(f"[WARN] main_working_port not found in config.ini, using default {DEFAULT_MAIN_PORT}")
                 main_port = DEFAULT_MAIN_PORT
             
-            # Read cp_working_port
+            # Read cp_working_port - 优先使用 config_data 中的值
             if 'cp_working_port' in config_data:
+                try:
+                    cp_port = int(config_data['cp_working_port'])
+                    log_message(f"Using cp_working_port from config_data: {cp_port}")
+                except ValueError:
+                    log_message(f"[ERROR] Invalid cp_working_port in config_data, using default {DEFAULT_CP_PORT}")
+                    cp_port = DEFAULT_CP_PORT
+            elif 'cp_working_port' in config_data:
                 try:
                     cp_port = int(config_data['cp_working_port'])
                     log_message(f"Set cp_working_port: {cp_port}")
@@ -649,15 +748,264 @@ def cleanup():
             config_provider.kill()
             config_provider.wait()
 
+def restart_node_only():
+    """Restart only the Node.js process, keep config provider running"""
+    global node
+    
+    if node:
+        log_message("Terminating Node.js process...")
+        try:
+            node.terminate()
+            try:
+                node.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                node.kill()
+                node.wait()
+        except Exception as e:
+            log_message(f"Error terminating node: {e}")
+        node = None
+    
+    # Start Node.js again
+    runtime_path = os.path.join(INDEPENDENCES_DIR, "runtime.js")
+    
+    if not os.path.exists(runtime_path):
+        log_message(f"runtime.js not found in {INDEPENDENCES_DIR}")
+        print("Error: runtime.js not found")
+        return False
+    
+    log_message(f"Starting Node.js process from {INDEPENDENCES_DIR}...")
+    try:
+        node = subprocess.Popen(
+            [
+                "node",
+                runtime_path
+            ],
+            cwd=INDEPENDENCES_DIR,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+        
+        # Restart stdout/stderr readers
+        threading.Thread(
+            target=read_stdout,
+            daemon=True
+        ).start()
+        
+        threading.Thread(
+            target=read_stderr,
+            daemon=True
+        ).start()
+        
+        log_message(f"Node.js process restarted successfully (PID: {node.pid})")
+        print(f"Node.js process restarted (PID: {node.pid})")
+        return True
+        
+    except Exception as e:
+        log_message(f"Failed to restart Node.js: {e}")
+        print(f"Failed to restart Node.js: {e}")
+        return False
+
+def restart_cp_only():
+    """Restart only the config provider process"""
+    global config_provider, cp_port, CP_DISABLED, config_data, main_port
+    
+    # Skip if CP is disabled
+    if CP_DISABLED:
+        print("CP is disabled (.nocp file detected), cannot restart")
+        log_message("CP is disabled, cannot restart")
+        return False
+    
+    # Terminate existing CP process
+    if config_provider:
+        log_message("Terminating configprovider.py process...")
+        try:
+            config_provider.terminate()
+            try:
+                config_provider.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                config_provider.kill()
+                config_provider.wait()
+        except Exception as e:
+            log_message(f"Error terminating configprovider: {e}")
+        config_provider = None
+    
+    # Download configprovider.py if needed
+    if not download_configprovider():
+        log_message("[WARN] Failed to download configprovider.py, skipping...")
+        print("Failed to download configprovider.py")
+        return False
+    
+    config_provider_path = os.path.join(CP_DIR, "configprovider.py")
+    
+    if not os.path.exists(config_provider_path):
+        log_message("[WARN] configprovider.py not found in CP directory, skipping...")
+        print("configprovider.py not found")
+        return False
+    
+    try:
+        log_message(f"Starting configprovider.py from {CP_DIR}...")
+        config_provider = subprocess.Popen(
+            [
+                sys.executable,
+                config_provider_path
+            ],
+            cwd=CP_DIR,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+        
+        # Start threads to read output
+        threading.Thread(
+            target=read_config_provider_stdout,
+            daemon=True
+        ).start()
+        
+        threading.Thread(
+            target=read_config_provider_stderr,
+            daemon=True
+        ).start()
+        
+        log_message(f"configprovider.py started successfully (PID: {config_provider.pid})")
+        print(f"CP service restarted (PID: {config_provider.pid})")
+        
+        # Wait for configprovider to initialize
+        log_message("Waiting 2 seconds for configprovider to initialize...")
+        time.sleep(2)
+        
+        # ====== 强制重新读取配置文件 ======
+        log_message("Force re-reading configuration from config.ini...")
+        
+        # 备份 set 命令设置的端口值
+        saved_main_port = None
+        saved_cp_port = None
+        if 'main_working_port' in config_data:
+            try:
+                saved_main_port = int(config_data['main_working_port'])
+                log_message(f"Backup main_working_port: {saved_main_port}")
+            except ValueError:
+                pass
+        if 'cp_working_port' in config_data:
+            try:
+                saved_cp_port = int(config_data['cp_working_port'])
+                log_message(f"Backup cp_working_port: {saved_cp_port}")
+            except ValueError:
+                pass
+        
+        config_path = os.path.join(CP_DIR, "config.ini")
+        if os.path.exists(config_path):
+            try:
+                config = configparser.ConfigParser()
+                config.read(config_path, encoding='utf-8')
+                
+                if config.has_section('ConfigProvider'):
+                    # 清空 config_data（但保留 set 命令设置的端口值，我们稍后恢复）
+                    config_data.clear()
+                    
+                    # 重新读取配置文件
+                    for key, value in config.items('ConfigProvider'):
+                        config_data[key] = value
+                        log_message(f"Reloaded config: {key} = {value}")
+                    
+                    # 恢复 set 命令设置的端口值（如果有）
+                    if saved_main_port is not None:
+                        config_data['main_working_port'] = str(saved_main_port)
+                        main_port = saved_main_port
+                        log_message(f"Restored main_working_port from set command: {main_port}")
+                    if saved_cp_port is not None:
+                        config_data['cp_working_port'] = str(saved_cp_port)
+                        cp_port = saved_cp_port
+                        log_message(f"Restored cp_working_port from set command: {cp_port}")
+                    
+                    # 更新 index.js
+                    log_message("Updating index.js with new configuration...")
+                    update_index_js_config()
+                    
+                    # 获取 CP 版本
+                    fetch_cp_version()
+                    
+                    print("Configuration reloaded successfully")
+                else:
+                    log_message("[WARN] [ConfigProvider] section not found in config.ini")
+                    print("Warning: [ConfigProvider] section not found in config.ini")
+            except Exception as e:
+                log_message(f"[ERROR] Failed to reload config.ini: {e}")
+                print(f"Failed to reload configuration: {e}")
+        else:
+            log_message("[WARN] config.ini not found, keeping existing configuration")
+            print("Warning: config.ini not found, keeping existing configuration")
+        
+        print("CP service restarted successfully")
+        log_message("CP service restarted successfully")
+        
+        print("\nNote: CP service restarted. Use 'restart index' to reload Node.js if needed.")
+        return True
+        
+    except Exception as e:
+        log_message(f"Failed to restart configprovider.py: {e}")
+        print(f"Failed to restart CP service: {e}")
+        return False
+
+def stop_cp_only():
+    """Stop only the config provider process"""
+    global config_provider, CP_DISABLED
+    
+    # Skip if CP is disabled
+    if CP_DISABLED:
+        print("CP is disabled (.nocp file detected), nothing to stop")
+        log_message("CP is disabled, nothing to stop")
+        return False
+    
+    if not config_provider:
+        print("CP service is not running")
+        log_message("CP service is not running")
+        return False
+    
+    try:
+        log_message("Terminating configprovider.py process...")
+        config_provider.terminate()
+        try:
+            config_provider.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            log_message("Force killing configprovider.py...")
+            config_provider.kill()
+            config_provider.wait()
+        
+        pid = config_provider.pid
+        config_provider = None
+        
+        log_message(f"CP service stopped (PID: {pid})")
+        print(f"CP service stopped (PID: {pid})")
+        
+        # 更新 CP_DISABLED 标志，防止后续尝试重启 CP
+        # 但保留 config_data 中的配置，以便 Node.js 继续工作
+        log_message("CP service disabled until restart")
+        print("CP service is now stopped. Use 'restart cp' to start it again.")
+        
+        return True
+        
+    except Exception as e:
+        log_message(f"Error stopping CP service: {e}")
+        print(f"Error stopping CP service: {e}")
+        return False
+
 def console_help():
     """Display help information"""
     print("\n" + "=" * 60)
     print("Available commands:")
-    print("  help     - Show this help message")
-    print("  version  - Show version information")
-    print("  restart  - Restart the server (kills all subprocesses and restarts)")
-    print("  stop     - Stop the server and exit")
-    print("  get <key> - Get configuration value (e.g., get main_working_port)")
+    print("  help          - Show this help message")
+    print("  version       - Show version information")
+    print("  restart       - Restart the entire server (all subprocesses)")
+    print("  restart cp    - Restart CP service only")
+    print("  restart index - Restart index.js (Node.js) only")
+    print("  stop          - Stop the entire server and exit")
+    print("  stop cp       - Stop CP service only")
+    print("  get <key>     - Get configuration value (e.g., get main_working_port)")
+    print("  set <k1> <v1> [<k2> <v2> ...] - Set configuration values and restart node")
     print("=" * 60 + "\n")
 
 def console_version():
@@ -665,7 +1013,7 @@ def console_version():
     global CP_VERSION, CP_DISABLED
     
     print("\n" + "=" * 60)
-    print("InjeSecure Python Server Version: SnapShot2608171140")
+    print("InjeSecure Python Server Version: SnapShot2608191737")
     if CP_DISABLED:
         print("CP Version: Disabled (.nocp file detected)")
     else:
@@ -677,9 +1025,9 @@ def console_get(key):
     if key in config_data:
         print(f"{key} = {config_data[key]}")
     elif key == "main_working_port":
-        print(f"main_working_port = {main_port}")
+        print(f"main_working_port = {main_port} (runtime)")
     elif key == "cp_working_port":
-        print(f"cp_working_port = {cp_port}")
+        print(f"cp_working_port = {cp_port} (runtime)")
     else:
         print(f"Configuration key '{key}' not found")
         print("Available keys:")
@@ -688,43 +1036,207 @@ def console_get(key):
         print("  - main_working_port")
         print("  - cp_working_port")
 
-def console_restart():
-    """Restart the server"""
-    global console_running, node, config_provider
+def console_set(args):
+    """Set configuration values and restart node process"""
+    global config_data, main_port, cp_port
     
-    print("Restarting server...")
-    log_message("Console: Restarting server...")
+    if len(args) < 2:
+        print("Usage: set <key1> <value1> [<key2> <value2> ...]")
+        print("Example: set my_key new_secret_key enable_injection false")
+        print("\nAvailable keys to set:")
+        print("  enable_key_auth       - true/false")
+        print("  enable_injection      - true/false")
+        print("  my_key                - your main key")
+        print("  temp_key_time_limited - your temp key")
+        print("  start_time            - YYYY-MM-DD HH:MM:SS")
+        print("  end_time              - YYYY-MM-DD HH:MM:SS")
+        print("  injection_config_url  - URL to injections.json")
+        print("  whitelist             - JSON array or comma-separated list")
+        print("  main_working_port     - port number (requires full server restart)")
+        print("  cp_working_port       - port number (requires full server restart)")
+        return
     
-    # Cleanup old processes
-    cleanup()
+    # Parse key-value pairs
+    updated_keys = []
+    port_changed = False
     
-    # Reset references
-    node = None
-    config_provider = None
+    for i in range(0, len(args) - 1, 2):
+        key = args[i]
+        value = args[i + 1]
+        
+        # Check if key exists in config_data or is a known key
+        known_keys = [
+            'enable_key_auth', 'enable_injection', 'my_key', 
+            'temp_key_time_limited', 'start_time', 'end_time',
+            'injection_config_url', 'whitelist', 
+            'main_working_port', 'cp_working_port'
+        ]
+        
+        if key not in known_keys:
+            print(f"Warning: '{key}' is not a known configuration key")
+            continue
+        
+        # Update config_data
+        config_data[key] = value
+        updated_keys.append(key)
+        
+        # Check if port changed
+        if key == 'main_working_port':
+            port_changed = True
+            try:
+                new_port = int(value)
+                main_port = new_port
+                print(f"  Set main_working_port = {new_port} (global updated)")
+            except ValueError:
+                print(f"  Warning: '{value}' is not a valid port number")
+        elif key == 'cp_working_port':
+            port_changed = True
+            try:
+                new_port = int(value)
+                cp_port = new_port
+                print(f"  Set cp_working_port = {new_port} (global updated)")
+            except ValueError:
+                print(f"  Warning: '{value}' is not a valid port number")
+        else:
+            print(f"  Set {key} = {value}")
     
-    # Restart everything
-    try:
-        start_node()
-        log_message(f"Worker running on :{main_port}")
-        print(f"Worker running on :{main_port}")
-        print(f"Logs are written to: {LOG_FILE}")
-        print("Server restarted successfully!")
-    except Exception as e:
-        log_message(f"Failed to restart: {e}")
-        print(f"Failed to restart: {e}")
+    if not updated_keys:
+        print("No valid keys updated")
+        return
+    
+    # If ports changed, we need full restart
+    if port_changed:
+        print("\n⚠️  Port configuration changed. Full server restart required.")
+        print("  The server will now restart completely to apply port changes...")
+        log_message("Console: Port changed, performing full server restart...")
+        
+        # 更新 index.js 中的其他配置（但不包括端口，因为 index.js 不直接使用端口）
+        # 但端口变化主要影响 Python 服务本身
+        update_index_js_config()
+        
+        # 执行完整重启
+        console_restart([])
+        return
+    
+    # 非端口配置：更新 index.js 并重启 Node.js
+    log_message("Console: Updating index.js with new configuration...")
+    if update_index_js_config():
+        print("Configuration written to index.js successfully")
+        
+        # Restart Node.js process only
+        print("Restarting Node.js process...")
+        restart_node_only()
+    else:
+        print("Failed to update index.js configuration")
 
-def console_stop():
-    """Stop the server"""
-    global console_running
+def console_restart(args):
+    """Restart the server or subprocesses"""
+    global console_running, node, config_provider, main_port, cp_port
     
-    print("Stopping server...")
-    log_message("Console: Stopping server...")
-    console_running = False
+    if not args:
+        # 没有参数：重启整个服务
+        print("Restarting entire server...")
+        log_message("Console: Restarting entire server...")
+        
+        # Cleanup old processes
+        cleanup()
+        
+        # Reset references
+        node = None
+        config_provider = None
+        
+        # 注意：不重置 main_port 和 cp_port，保留 set 命令设置的值
+        
+        # Restart everything
+        try:
+            # 重新读取 config.ini，但如果有 set 命令设置的端口，以 config_data 为准
+            read_config()
+            
+            # 但如果 config_data 中有端口配置，覆盖 read_config 读取的值
+            if 'main_working_port' in config_data:
+                try:
+                    main_port = int(config_data['main_working_port'])
+                    log_message(f"Using main_working_port from config_data: {main_port}")
+                except ValueError:
+                    pass
+            
+            if 'cp_working_port' in config_data:
+                try:
+                    cp_port = int(config_data['cp_working_port'])
+                    log_message(f"Using cp_working_port from config_data: {cp_port}")
+                except ValueError:
+                    pass
+            
+            # 重新启动 Node.js（但不启动 CP，由 start_node 中的逻辑决定）
+            # 但实际上 start_node 会尝试启动 CP，所以我们需要检查 CP 是否应该运行
+            # 这里简化处理：直接调用 start_node，它会处理 CP 的启动
+            start_node()
+            
+            log_message(f"Worker running on :{main_port}")
+            print(f"Worker running on :{main_port}")
+            print(f"Logs are written to: {LOG_FILE}")
+            print("Server restarted successfully!")
+        except Exception as e:
+            log_message(f"Failed to restart: {e}")
+            print(f"Failed to restart: {e}")
+        return
     
-    # Cleanup and exit
-    cleanup()
-    print("Server stopped.")
-    os._exit(0)
+    # 有参数：处理子命令
+    subcommand = args[0].lower()
+    
+    if subcommand == "cp":
+        # 重启 CP 服务
+        print("Restarting CP service...")
+        log_message("Console: Restarting CP service...")
+        restart_cp_only()
+        
+    elif subcommand == "index":
+        # 重启 index.js (Node.js 进程)
+        print("Restarting index.js (Node.js process)...")
+        log_message("Console: Restarting index.js (Node.js process)...")
+        
+        # 先重新读取配置，确保使用最新配置
+        log_message("Re-reading configuration...")
+        read_config()
+        
+        # 重启 Node.js
+        restart_node_only()
+        
+    else:
+        print(f"Unknown restart target: {subcommand}")
+        print("Usage: restart          - Restart entire server")
+        print("       restart cp       - Restart CP service only")
+        print("       restart index    - Restart index.js only")
+
+def console_stop(args):
+    """Stop the server or subprocesses"""
+    global console_running, config_provider
+    
+    if not args:
+        # 没有参数：停止整个服务
+        print("Stopping server...")
+        log_message("Console: Stopping server...")
+        console_running = False
+        
+        # Cleanup and exit
+        cleanup()
+        print("Server stopped.")
+        os._exit(0)
+        return
+    
+    # 有参数：处理子命令
+    subcommand = args[0].lower()
+    
+    if subcommand == "cp":
+        # 只停止 CP 服务
+        print("Stopping CP service...")
+        log_message("Console: Stopping CP service...")
+        stop_cp_only()
+        
+    else:
+        print(f"Unknown stop target: {subcommand}")
+        print("Usage: stop          - Stop entire server")
+        print("       stop cp       - Stop CP service only")
 
 def show_console_prompt():
     """Display the console prompt"""
@@ -761,10 +1273,9 @@ def console_input_handler():
             elif command == "version":
                 console_version()
             elif command == "restart":
-                console_restart()
+                console_restart(parts[1:])
             elif command == "stop":
-                console_stop()
-                break
+                console_stop(parts[1:])
             elif command == "exit":
                 print("Unknown command: exit, did you mean 'stop'?")
             elif command == "getprop":
@@ -775,18 +1286,20 @@ def console_input_handler():
                     print("Example: get main_working_port")
                 else:
                     console_get(parts[1])
+            elif command == "set":
+                console_set(parts[1:])
             else:
                 print(f"Unknown command: {command}")
                 print("Type 'help' for available commands")
                 
         except KeyboardInterrupt:
             print("\nReceived interrupt signal...")
-            console_stop()
+            console_stop([])
             break
         except EOFError:
             # Handle Ctrl+D
             print("\nEOF detected, stopping...")
-            console_stop()
+            console_stop([])
             break
         except Exception as e:
             print(f"Error in console: {e}")
