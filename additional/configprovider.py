@@ -10,7 +10,7 @@ CONFIG_FILE = os.path.join(BASE_DIR, "config.ini")
 INJECTION_FILE = os.path.join(BASE_DIR, "injections.json")
 DEFAULT_URL = "https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/injections.json"
 
-CP_VERSION = "SnapShot08171104.patch01"
+CP_VERSION = "SnapShot2608191737"
 
 DEFAULT_CONFIG = {
     "ENABLE_KEY_AUTH": "true",
@@ -20,7 +20,8 @@ DEFAULT_CONFIG = {
     "END_TIME": "2000-01-01 00:00:00",
     "INJECTION_CONFIG_URL": DEFAULT_URL,
     "CP_WORKING_PORT": "8081",
-    "MAIN_WORKING_PORT": "8080"
+    "MAIN_WORKING_PORT": "8080",
+    "WHITELIST": "[]"
 }
 
 INJECTION_SOURCE_FILE = INJECTION_FILE
