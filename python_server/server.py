@@ -22,6 +22,7 @@ server_thread = None
 
 request_id = 0
 responses = {}
+responses_lock = threading.Lock()  # 问题12：添加锁保护 responses
 
 # Directory structure
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -53,6 +54,10 @@ CP_VERSION = "Unknown"
 # CP disabled flag
 CP_DISABLED = False
 
+# 追踪通过 set 命令设置的键（问题8）
+set_by_console = set()
+
+
 class Tee:
     """Output to both console and file"""
     def __init__(self, filename, mode='a'):
@@ -75,6 +80,7 @@ class Tee:
     def close(self):
         self.file.close()
 
+
 def init_directories():
     """Create necessary directories"""
     directories = [INDEPENDENCES_DIR, CP_DIR, LOG_DIR]
@@ -87,11 +93,14 @@ def init_directories():
             return False
     return True
 
+
 def log_message(msg):
     """Write log to file and console"""
     timestamp = time.strftime("%m-%d %H:%M:%S")
     log_entry = f"[{timestamp}][Worker-1-main] {msg}"
+    # 直接使用 print 写入，Tee 会处理输出
     print(log_entry)
+
 
 def download_file(url, filename):
     """Download file from URL"""
@@ -109,6 +118,7 @@ def download_file(url, filename):
         log_message(f"Failed to download {filename}: {e}")
         return False
 
+
 def check_nocp_file():
     """Check if .nocp file exists in the base directory"""
     global CP_DISABLED
@@ -119,6 +129,7 @@ def check_nocp_file():
         log_message("[INFO] .nocp file detected, CP features disabled")
         return True
     return False
+
 
 def download_configprovider():
     """Download configprovider.py from GitHub"""
@@ -136,6 +147,7 @@ def download_configprovider():
     
     log_message(f"configprovider.py not found, downloading from GitHub...")
     return download_file(configprovider_url, configprovider_path)
+
 
 def check_and_download_files():
     """Check and download missing files to independences directory"""
@@ -165,6 +177,7 @@ def check_and_download_files():
                     all_ok = False
     return all_ok
 
+
 def is_valid_url(url):
     """Check if a string is a valid URL"""
     try:
@@ -172,6 +185,7 @@ def is_valid_url(url):
         return all([result.scheme, result.netloc])
     except:
         return False
+
 
 def fetch_cp_version():
     """Fetch CP version from configprovider"""
@@ -202,6 +216,7 @@ def fetch_cp_version():
     except Exception as e:
         log_message(f"Failed to fetch CP version: {e}")
         CP_VERSION = "Unknown"
+
 
 def update_index_js_config():
     """Update index.js with configuration from config.ini"""
@@ -391,6 +406,7 @@ def update_index_js_config():
         log_message(f"[ERROR] Failed to update index.js: {e}")
         return False
 
+
 def read_config():
     """Read configuration from CP/config.ini"""
     global main_port, cp_port, config_data, CP_DISABLED
@@ -434,13 +450,6 @@ def read_config():
                 except ValueError:
                     log_message(f"[ERROR] Invalid main_working_port in config_data, using default {DEFAULT_MAIN_PORT}")
                     main_port = DEFAULT_MAIN_PORT
-            elif 'main_working_port' in config_data:
-                try:
-                    main_port = int(config_data['main_working_port'])
-                    log_message(f"Set main_working_port: {main_port}")
-                except ValueError:
-                    log_message(f"[ERROR] Invalid main_working_port value, using default {DEFAULT_MAIN_PORT}")
-                    main_port = DEFAULT_MAIN_PORT
             else:
                 log_message(f"[WARN] main_working_port not found in config.ini, using default {DEFAULT_MAIN_PORT}")
                 main_port = DEFAULT_MAIN_PORT
@@ -452,13 +461,6 @@ def read_config():
                     log_message(f"Using cp_working_port from config_data: {cp_port}")
                 except ValueError:
                     log_message(f"[ERROR] Invalid cp_working_port in config_data, using default {DEFAULT_CP_PORT}")
-                    cp_port = DEFAULT_CP_PORT
-            elif 'cp_working_port' in config_data:
-                try:
-                    cp_port = int(config_data['cp_working_port'])
-                    log_message(f"Set cp_working_port: {cp_port}")
-                except ValueError:
-                    log_message(f"[ERROR] Invalid cp_working_port value, using default {DEFAULT_CP_PORT}")
                     cp_port = DEFAULT_CP_PORT
             else:
                 log_message(f"[WARN] cp_working_port not found in config.ini, using default {DEFAULT_CP_PORT}")
@@ -476,7 +478,6 @@ def read_config():
             main_port = DEFAULT_MAIN_PORT
             cp_port = DEFAULT_CP_PORT
         
-        log_message(f"[DEBUG] After read_config: main_port={main_port}, cp_port={cp_port}")
         return True
         
     except Exception as e:
@@ -485,6 +486,7 @@ def read_config():
         main_port = DEFAULT_MAIN_PORT
         cp_port = DEFAULT_CP_PORT
         return False
+
 
 def start_config_provider():
     """Start configprovider.py from CP directory if it exists"""
@@ -517,7 +519,9 @@ def start_config_provider():
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1
+            bufsize=1,
+            encoding='utf-8',
+            errors='replace'
         )
         
         # Start threads to read output
@@ -546,6 +550,7 @@ def start_config_provider():
         log_message(f"[ERROR] Failed to start configprovider.py: {e}")
         return False
 
+
 def read_config_provider_stdout():
     """Read stdout from configprovider.py"""
     if config_provider:
@@ -555,6 +560,7 @@ def read_config_provider_stdout():
                 timestamp = time.strftime("%m-%d %H:%M:%S")
                 print(f"[{timestamp}][Worker-2-CP] {line}")
 
+
 def read_config_provider_stderr():
     """Read stderr from configprovider.py"""
     if config_provider:
@@ -563,6 +569,7 @@ def read_config_provider_stderr():
             if line:
                 timestamp = time.strftime("%m-%d %H:%M:%S")
                 print(f"[{timestamp}][Worker-2-CP] {line}")
+
 
 def start_node():
     global node
@@ -615,7 +622,9 @@ def start_node():
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        bufsize=1
+        bufsize=1,
+        encoding='utf-8',
+        errors='replace'
     )
 
     threading.Thread(
@@ -628,34 +637,80 @@ def start_node():
         daemon=True
     ).start()
     
-    log_message(f"[DEBUG] After start_node: main_port={main_port}")
+
 
 def read_stderr():
-    for line in node.stderr:
-        line = line.strip()
-        if line:
-            log_message(f"[node stderr] {line}")
+    """Read stderr from Node.js process"""
+    global node
+    while node is not None:  # 问题2：检查 node 是否为 None
+        try:
+            if node.stderr is None:
+                break
+            line = node.stderr.readline()
+            if not line:
+                break
+            line = line.strip()
+            if line:
+                log_message(f"[node stderr] {line}")
+        except (ValueError, OSError, AttributeError) as e:
+            # 管道关闭或 node 被清理
+            log_message(f"[node stderr] Reader stopped: {e}")
+            break
+        except Exception as e:
+            log_message(f"[node stderr] Unexpected error: {e}")
+            break
+
 
 def read_stdout():
-    for line in node.stdout:
-        line = line.strip()
-        if not line:
-            continue
-
+    """Read stdout from Node.js process"""
+    global node
+    while node is not None:  # 问题2：检查 node 是否为 None
         try:
-            msg = json.loads(line)
-        except Exception:
-            log_message(f"[bad node output] {line}")
-            continue
+            if node.stdout is None:
+                break
+            line = node.stdout.readline()
+            if not line:
+                break
+            line = line.strip()
+            if not line:
+                continue
 
-        handle_node(msg)
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                # 问题1：过滤掉包含替换字符的无效 JSON
+                log_message(f"[bad node output] {line}")
+                continue
+
+            handle_node(msg)
+        except (ValueError, OSError, AttributeError) as e:
+            # 管道关闭或 node 被清理
+            log_message(f"[node stdout] Reader stopped: {e}")
+            break
+        except Exception as e:
+            log_message(f"[node stdout] Unexpected error: {e}")
+            break
+
 
 def send_node(msg):
-    node.stdin.write(
-        json.dumps(msg)
-        + "\n"
-    )
-    node.stdin.flush()
+    """Send message to Node.js process"""
+    # 问题3：检查 node 是否可用
+    if node is None:
+        log_message("[WARN] Cannot send message: node is None")
+        return
+    if node.stdin is None or node.stdin.closed:
+        log_message("[WARN] Cannot send message: stdin is closed")
+        return
+    
+    try:
+        node.stdin.write(
+            json.dumps(msg)
+            + "\n"
+        )
+        node.stdin.flush()
+    except (BrokenPipeError, OSError, ValueError) as e:
+        log_message(f"[WARN] Failed to send message: {e}")
+
 
 def handle_node(msg):
     if msg["type"] == "fetch":
@@ -678,6 +733,7 @@ def handle_node(msg):
 
         except Exception as e:
             log_message(f"[fetch] Error {msg['url']}: {e}")
+            # 问题5：即使出错也尝试发送响应
             send_node({
                 "type": "fetch_response",
                 "id": msg["id"],
@@ -688,8 +744,10 @@ def handle_node(msg):
 
     elif msg["type"] == "response":
         rid = msg["id"]
-        if rid in responses:
-            responses[rid] = msg
+        with responses_lock:  # 问题12：使用锁保护
+            if rid in responses:
+                responses[rid] = msg
+
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -698,7 +756,8 @@ class Handler(BaseHTTPRequestHandler):
         request_id += 1
         rid = str(request_id)
 
-        responses[rid] = None
+        with responses_lock:  # 问题12：使用锁保护
+            responses[rid] = None
 
         send_node({
             "type": "request",
@@ -710,21 +769,59 @@ class Handler(BaseHTTPRequestHandler):
 
         log_message(f"[HTTP] GET {self.path} id={rid}")
 
-        while responses[rid] is None:
-            pass
+        # 问题4：添加超时机制
+        timeout = 30  # 30秒超时
+        elapsed = 0
+        response_received = False
+        
+        while elapsed < timeout:
+            with responses_lock:  # 问题12：使用锁保护
+                if responses.get(rid) is not None:
+                    response_received = True
+                    break
+            time.sleep(0.1)
+            elapsed += 0.1
+        
+        if not response_received:
+            # 超时
+            log_message(f"[HTTP] Timeout GET {self.path} id={rid}")
+            self.send_response(504)
+            self.end_headers()
+            try:
+                self.wfile.write(b"Gateway Timeout")
+            except (BrokenPipeError, OSError):
+                pass
+            with responses_lock:
+                if rid in responses:
+                    del responses[rid]
+            return
 
-        result = responses.pop(rid)
+        with responses_lock:  # 问题12：使用锁保护
+            result = responses.pop(rid)
 
         self.send_response(result["status"])
         for k, v in result["headers"].items():
             self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(result["body"].encode())
+        
+        # 问题11：使用 errors='replace' 处理编码问题
+        body = result.get("body", "")
+        if isinstance(body, str):
+            try:
+                self.wfile.write(body.encode('utf-8', errors='replace'))
+            except (BrokenPipeError, OSError):
+                pass
+        else:
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, OSError):
+                pass
 
         log_message(f"[HTTP] Response {self.path} status={result['status']}")
 
     def log_message(self, *args):
         pass
+
 
 def cleanup():
     """Cleanup subprocesses on exit"""
@@ -732,21 +829,41 @@ def cleanup():
     
     if node:
         log_message("Terminating Node.js process...")
-        node.terminate()
+        try:
+            node.terminate()
+        except Exception:
+            pass
+        # 问题6：Windows 下更可靠的终止
         try:
             node.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            node.kill()
-            node.wait()
+            try:
+                node.kill()
+                node.wait()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        node = None
     
     if config_provider:
         log_message("Terminating configprovider.py process...")
-        config_provider.terminate()
+        try:
+            config_provider.terminate()
+        except Exception:
+            pass
         try:
             config_provider.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            config_provider.kill()
-            config_provider.wait()
+            try:
+                config_provider.kill()
+                config_provider.wait()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        config_provider = None
+
 
 def restart_node_only():
     """Restart only the Node.js process, keep config provider running"""
@@ -756,13 +873,18 @@ def restart_node_only():
         log_message("Terminating Node.js process...")
         try:
             node.terminate()
+        except Exception:
+            pass
+        try:
+            node.wait(timeout=5)
+        except subprocess.TimeoutExpired:
             try:
-                node.wait(timeout=5)
-            except subprocess.TimeoutExpired:
                 node.kill()
                 node.wait()
-        except Exception as e:
-            log_message(f"Error terminating node: {e}")
+            except Exception:
+                pass
+        except Exception:
+            pass
         node = None
     
     # Start Node.js again
@@ -785,7 +907,9 @@ def restart_node_only():
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1
+            bufsize=1,
+            encoding='utf-8',
+            errors='replace'
         )
         
         # Restart stdout/stderr readers
@@ -808,6 +932,7 @@ def restart_node_only():
         print(f"Failed to restart Node.js: {e}")
         return False
 
+
 def restart_cp_only():
     """Restart only the config provider process"""
     global config_provider, cp_port, CP_DISABLED, config_data, main_port
@@ -823,13 +948,18 @@ def restart_cp_only():
         log_message("Terminating configprovider.py process...")
         try:
             config_provider.terminate()
+        except Exception:
+            pass
+        try:
+            config_provider.wait(timeout=5)
+        except subprocess.TimeoutExpired:
             try:
-                config_provider.wait(timeout=5)
-            except subprocess.TimeoutExpired:
                 config_provider.kill()
                 config_provider.wait()
-        except Exception as e:
-            log_message(f"Error terminating configprovider: {e}")
+            except Exception:
+                pass
+        except Exception:
+            pass
         config_provider = None
     
     # Download configprovider.py if needed
@@ -856,7 +986,9 @@ def restart_cp_only():
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1
+            bufsize=1,
+            encoding='utf-8',
+            errors='replace'
         )
         
         # Start threads to read output
@@ -877,25 +1009,17 @@ def restart_cp_only():
         log_message("Waiting 2 seconds for configprovider to initialize...")
         time.sleep(2)
         
-        # ====== 强制重新读取配置文件 ======
+        # ====== 问题8：强制重新读取配置文件，保留 set 命令设置的值 ======
         log_message("Force re-reading configuration from config.ini...")
         
-        # 备份 set 命令设置的端口值
-        saved_main_port = None
-        saved_cp_port = None
-        if 'main_working_port' in config_data:
-            try:
-                saved_main_port = int(config_data['main_working_port'])
-                log_message(f"Backup main_working_port: {saved_main_port}")
-            except ValueError:
-                pass
-        if 'cp_working_port' in config_data:
-            try:
-                saved_cp_port = int(config_data['cp_working_port'])
-                log_message(f"Backup cp_working_port: {saved_cp_port}")
-            except ValueError:
-                pass
+        # 备份整个 config_data（包含 set 命令设置的所有值）
+        backup_config = dict(config_data)
+        log_message(f"Backed up {len(backup_config)} config items")
         
+        # 清空 config_data
+        config_data.clear()
+        
+        # 重新读取 config.ini
         config_path = os.path.join(CP_DIR, "config.ini")
         if os.path.exists(config_path):
             try:
@@ -903,23 +1027,29 @@ def restart_cp_only():
                 config.read(config_path, encoding='utf-8')
                 
                 if config.has_section('ConfigProvider'):
-                    # 清空 config_data（但保留 set 命令设置的端口值，我们稍后恢复）
-                    config_data.clear()
-                    
-                    # 重新读取配置文件
+                    # 从 config.ini 读取所有配置
                     for key, value in config.items('ConfigProvider'):
                         config_data[key] = value
-                        log_message(f"Reloaded config: {key} = {value}")
+                        log_message(f"Reloaded config from file: {key} = {value}")
                     
-                    # 恢复 set 命令设置的端口值（如果有）
-                    if saved_main_port is not None:
-                        config_data['main_working_port'] = str(saved_main_port)
-                        main_port = saved_main_port
-                        log_message(f"Restored main_working_port from set command: {main_port}")
-                    if saved_cp_port is not None:
-                        config_data['cp_working_port'] = str(saved_cp_port)
-                        cp_port = saved_cp_port
-                        log_message(f"Restored cp_working_port from set command: {cp_port}")
+                    # 恢复 backup 中的所有配置（覆盖 config.ini 中相同的键）
+                    for key, value in backup_config.items():
+                        config_data[key] = value
+                        log_message(f"Restored config from backup: {key} = {value}")
+                    
+                    # 更新端口变量
+                    if 'main_working_port' in config_data:
+                        try:
+                            main_port = int(config_data['main_working_port'])
+                            log_message(f"main_working_port set to: {main_port}")
+                        except ValueError:
+                            pass
+                    if 'cp_working_port' in config_data:
+                        try:
+                            cp_port = int(config_data['cp_working_port'])
+                            log_message(f"cp_working_port set to: {cp_port}")
+                        except ValueError:
+                            pass
                     
                     # 更新 index.js
                     log_message("Updating index.js with new configuration...")
@@ -936,7 +1066,9 @@ def restart_cp_only():
                 log_message(f"[ERROR] Failed to reload config.ini: {e}")
                 print(f"Failed to reload configuration: {e}")
         else:
-            log_message("[WARN] config.ini not found, keeping existing configuration")
+            log_message("[WARN] config.ini not found, restoring backup config")
+            # 恢复备份
+            config_data = dict(backup_config)
             print("Warning: config.ini not found, keeping existing configuration")
         
         print("CP service restarted successfully")
@@ -949,6 +1081,7 @@ def restart_cp_only():
         log_message(f"Failed to restart configprovider.py: {e}")
         print(f"Failed to restart CP service: {e}")
         return False
+
 
 def stop_cp_only():
     """Stop only the config provider process"""
@@ -967,13 +1100,20 @@ def stop_cp_only():
     
     try:
         log_message("Terminating configprovider.py process...")
-        config_provider.terminate()
+        try:
+            config_provider.terminate()
+        except Exception:
+            pass
         try:
             config_provider.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            log_message("Force killing configprovider.py...")
-            config_provider.kill()
-            config_provider.wait()
+            try:
+                config_provider.kill()
+                config_provider.wait()
+            except Exception:
+                pass
+        except Exception:
+            pass
         
         pid = config_provider.pid
         config_provider = None
@@ -981,8 +1121,6 @@ def stop_cp_only():
         log_message(f"CP service stopped (PID: {pid})")
         print(f"CP service stopped (PID: {pid})")
         
-        # 更新 CP_DISABLED 标志，防止后续尝试重启 CP
-        # 但保留 config_data 中的配置，以便 Node.js 继续工作
         log_message("CP service disabled until restart")
         print("CP service is now stopped. Use 'restart cp' to start it again.")
         
@@ -992,6 +1130,7 @@ def stop_cp_only():
         log_message(f"Error stopping CP service: {e}")
         print(f"Error stopping CP service: {e}")
         return False
+
 
 def console_help():
     """Display help information"""
@@ -1008,17 +1147,19 @@ def console_help():
     print("  set <k1> <v1> [<k2> <v2> ...] - Set configuration values and restart node")
     print("=" * 60 + "\n")
 
+
 def console_version():
     """Display version information"""
     global CP_VERSION, CP_DISABLED
     
     print("\n" + "=" * 60)
-    print("InjeSecure Python Server Version: SnapShot2608191737")
+    print("InjeSecure Python Server Version: v1.0.1stable(2608221736)")
     if CP_DISABLED:
         print("CP Version: Disabled (.nocp file detected)")
     else:
         print(f"CP Version: {CP_VERSION}")
     print("=" * 60 + "\n")
+
 
 def console_get(key):
     """Get configuration value"""
@@ -1036,9 +1177,10 @@ def console_get(key):
         print("  - main_working_port")
         print("  - cp_working_port")
 
+
 def console_set(args):
     """Set configuration values and restart node process"""
-    global config_data, main_port, cp_port
+    global config_data, main_port, cp_port, set_by_console
     
     if len(args) < 2:
         print("Usage: set <key1> <value1> [<key2> <value2> ...]")
@@ -1078,6 +1220,7 @@ def console_set(args):
         
         # Update config_data
         config_data[key] = value
+        set_by_console.add(key)  # 问题8：记录通过 set 命令设置的键
         updated_keys.append(key)
         
         # Check if port changed
@@ -1111,7 +1254,6 @@ def console_set(args):
         log_message("Console: Port changed, performing full server restart...")
         
         # 更新 index.js 中的其他配置（但不包括端口，因为 index.js 不直接使用端口）
-        # 但端口变化主要影响 Python 服务本身
         update_index_js_config()
         
         # 执行完整重启
@@ -1129,6 +1271,7 @@ def console_set(args):
     else:
         print("Failed to update index.js configuration")
 
+
 def console_restart(args):
     """Restart the server or subprocesses"""
     global console_running, node, config_provider, main_port, cp_port
@@ -1145,31 +1288,14 @@ def console_restart(args):
         node = None
         config_provider = None
         
-        # 注意：不重置 main_port 和 cp_port，保留 set 命令设置的值
-        
         # Restart everything
         try:
-            # 重新读取 config.ini，但如果有 set 命令设置的端口，以 config_data 为准
+            # 重新读取配置（read_config 会优先使用 config_data 中的端口值）
             read_config()
             
-            # 但如果 config_data 中有端口配置，覆盖 read_config 读取的值
-            if 'main_working_port' in config_data:
-                try:
-                    main_port = int(config_data['main_working_port'])
-                    log_message(f"Using main_working_port from config_data: {main_port}")
-                except ValueError:
-                    pass
+            # 问题7：移除多余的端口覆盖逻辑，read_config 已经处理了
             
-            if 'cp_working_port' in config_data:
-                try:
-                    cp_port = int(config_data['cp_working_port'])
-                    log_message(f"Using cp_working_port from config_data: {cp_port}")
-                except ValueError:
-                    pass
-            
-            # 重新启动 Node.js（但不启动 CP，由 start_node 中的逻辑决定）
-            # 但实际上 start_node 会尝试启动 CP，所以我们需要检查 CP 是否应该运行
-            # 这里简化处理：直接调用 start_node，它会处理 CP 的启动
+            # 重新启动 Node.js
             start_node()
             
             log_message(f"Worker running on :{main_port}")
@@ -1208,6 +1334,7 @@ def console_restart(args):
         print("       restart cp       - Restart CP service only")
         print("       restart index    - Restart index.js only")
 
+
 def console_stop(args):
     """Stop the server or subprocesses"""
     global console_running, config_provider
@@ -1238,12 +1365,14 @@ def console_stop(args):
         print("Usage: stop          - Stop entire server")
         print("       stop cp       - Stop CP service only")
 
+
 def show_console_prompt():
     """Display the console prompt"""
     print("\n" + "-" * 40)
     print("Console")
     print("- type help to get what command you can run")
     print("-" * 40)
+
 
 def console_input_handler():
     """Handle console input in a separate thread"""
@@ -1304,11 +1433,13 @@ def console_input_handler():
         except Exception as e:
             print(f"Error in console: {e}")
 
+
 def start_console():
     """Start the console input handler"""
     console_thread = threading.Thread(target=console_input_handler, daemon=True)
     console_thread.start()
     return console_thread
+
 
 if __name__ == "__main__":
     # Ensure log directory exists before setting up tee
@@ -1330,7 +1461,6 @@ if __name__ == "__main__":
     start_node()
 
     log_message(f"Worker running on :{main_port}")
-    log_message(f"[DEBUG] Before HTTP server: main_port={main_port}")
     print(f"Worker running on :{main_port}")
     print(f"Logs are written to: {LOG_FILE}")
 
