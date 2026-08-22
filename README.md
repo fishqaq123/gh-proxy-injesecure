@@ -95,7 +95,7 @@ const INJECTION_CONFIG_URL = 'https://raw.githubusercontent.com/你的用户名/
 
 ### 方式二：本地 Python 服务部署
 
-本地 Python 服务模式适合需要完整配置管理能力的用户，提供 Web UI 注入、配置热更新、进程管理等功能。
+本地 Python 服务模式适合需要完整配置管理能力（即需要本地部署的）的用户，提供配置动态更新、基础进程管理等功能。
 
 #### 系统要求
 
@@ -159,7 +159,7 @@ ConfigProvider 是本地 Python 服务中的配置提供组件，负责：
 
 - 管理本地 `config.ini` 和 `injections.json`
 - 向 Worker 主程序提供统一的配置访问接口
-- 支持远程注入配置的本地缓存与回退
+- 提供远程注入配置的使用方式
 
 **禁用 CP（使用纯 Worker 模式）**
 
