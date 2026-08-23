@@ -97,6 +97,10 @@ const INJECTION_CONFIG_URL = 'https://raw.githubusercontent.com/你的用户名/
 
 本地 Python 服务模式适合需要完整配置管理能力（即需要本地部署的）的用户，提供配置动态更新、基础进程管理等功能。
 
+> ⚠️ **本模式的本地模拟环境依赖 [p2cl](https://github.com/fishqaq123/p2cl)**（Python-to-Cloudflare Lite）。
+> InjeSecure 的本地运行时 `runtime.js` 由 p2cl 仓库提供并自动下载，
+> 因此无需在本仓库内单独维护 runtime，但运行本地服务时需要能够访问 p2cl。
+
 #### 系统要求
 
 | 组件 | 版本要求 |
@@ -117,7 +121,7 @@ python server.py
 
 首次启动时，服务会自动：
 - 创建 `independences/`、`CP/`、`log/` 目录
-- 从 GitHub 下载 `runtime.js` 和 `index.js` 到 `independences/`
+- 从 **p2cl 仓库**下载 `runtime.js`，从 InjeSecure 仓库下载 `index.js` 到 `independences/`
 - 从 GitHub 下载 `configprovider.py` 到 `CP/`
 - 生成默认的 `config.ini` 和 `injections.json`
 
@@ -178,7 +182,7 @@ touch .nocp   # Linux/macOS
 .
 ├── server.py                 # Python 管理服务主程序
 ├── independences/            # Node.js 运行目录
-│   ├── runtime.js            # Node.js 运行时
+│   ├── runtime.js            # p2cl 提供的 CF Workers 模拟运行时（自动下载）
 │   └── index.js              # Worker 主程序
 ├── CP/                       # ConfigProvider 目录
 │   ├── config.ini            # 配置文件
