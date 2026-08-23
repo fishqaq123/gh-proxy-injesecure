@@ -44,6 +44,20 @@ cp_port = DEFAULT_CP_PORT
 # Configuration storage
 config_data = {}
 
+# ===== 防刷：令牌桶状态 =====
+# rate_perm: 每秒令牌速率（refill）
+# rate_burst: 令牌桶容量（可突发量）
+# rate_tokens: 当前令牌数（初始=bucket）
+# rate_last: 上次 refill 的时间戳
+_rate_buckets = {}          # key -> {perm, burst, tokens, last}
+_rate_lock = threading.Lock()
+_RATE_INIT = {"perm": 0.0, "burst": 0.0, "tokens": 0.0, "last": 0.0}
+
+DEFAULT_RATE_GLOBAL_PERM = 0.0       # 0 = 不启用（由 config 覆盖）
+DEFAULT_RATE_GLOBAL_BURST = 0.0
+DEFAULT_RATE_IDENTITY_PERM = 0.0
+DEFAULT_RATE_IDENTITY_BURST = 0.0
+
 # Console control flags
 console_running = True
 server_ready = False
@@ -56,6 +70,222 @@ CP_DISABLED = False
 
 # 追踪通过 set 命令设置的键（问题8）
 set_by_console = set()
+
+
+# ============================================================
+# 防刷工具（仅 server.py 层，不涉及 index.js）
+# ============================================================
+
+def _cfg_bool(key, default=False):
+    """从 config_data 读取布尔类型配置。"""
+    v = config_data.get(key, "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    try:
+        return bool(int(v))
+    except (ValueError, TypeError):
+        return default
+
+
+def _cfg_float(key, default=0.0):
+    """从 config_data 读取浮点配置。"""
+    try:
+        return float(str(config_data.get(key, "")).strip())
+    except (ValueError, TypeError):
+        return default
+
+
+def get_request_cookie(handler):
+    """从请求头读取 Cookie，返回原始 cookie 字符串（无则空串）。"""
+    try:
+        return handler.headers.get("Cookie") or ""
+    except Exception:
+        return ""
+
+
+def is_cookie_banned(cookie):
+    """检查给定 cookie 是否命中 banned_cookies（支持逗号分隔与正则）。"""
+    if not cookie:
+        return False
+    banned = config_data.get("banned_cookies", "").strip()
+    if not banned:
+        return False
+    import re as _re
+    for item in banned.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            if _re.search(item, cookie):
+                return True
+        except _re.error:  # 正则非法则退化为精确匹配
+            if item == cookie:
+                return True
+    return False
+
+
+def _tokens(key, perm, burst):
+    """按 key 的令牌桶（refill 后）判断是否放行。"""
+    now = time.time()
+    with _rate_lock:
+        if perm <= 0:
+            # 桶未启用，一律放行
+            return True
+        b = _rate_buckets.get(key)
+        if b is None:
+            b = {
+                "perm": float(perm),
+                "burst": float(burst),
+                "tokens": float(burst),
+                "last": now,
+            }
+            _rate_buckets[key] = b
+        # refill 令牌
+        elapsed = now - b["last"]
+        if elapsed > 0:
+            b["tokens"] = min(b["burst"], b["tokens"] + elapsed * b["perm"])
+            b["last"] = now
+        if b["tokens"] >= 1.0:
+            b["tokens"] -= 1.0
+            return True
+        return False
+
+
+def rate_limit_check(identity):
+    """do_GET 入口调用。返回 (allowed, status, msg)。
+
+    双层：全局桶 + 按来源标识桶（cookie 或匿名池）。
+    identity 为空串时使用 '__anonymous__' 作为键。
+    """
+    if not _cfg_bool("rate_limit_enabled", False):
+        return (True, 200, "")
+
+    # 全局桶
+    g_perm = _cfg_float("rate_limit_global_perm", DEFAULT_RATE_GLOBAL_PERM)
+    g_burst = _cfg_float("rate_limit_global_burst", DEFAULT_RATE_GLOBAL_BURST)
+    if g_perm > 0 and not _tokens("__global__", g_perm, g_burst):
+        return (False, 429, "rate limited (global)")
+
+    # 按来源标识桶
+    if not identity:
+        identity = "__anonymous__"
+    i_perm = _cfg_float("rate_limit_identity_perm", DEFAULT_RATE_IDENTITY_PERM)
+    i_burst = _cfg_float("rate_limit_identity_burst", DEFAULT_RATE_IDENTITY_BURST)
+    if i_perm > 0 and not _tokens("identity:" + identity, i_perm, i_burst):
+        return (False, 429, "rate limited (identity)")
+
+    return (True, 200, "")
+
+
+# ===== 防刷：cookie 分配（唯一浏览器标识）=====
+
+COOKIE_NAME = "injesecure_id"
+COOKIE_MAX_AGE = 60 * 60 * 24 * 30        # 30 天
+COOKIE_ENV_ENABLE = "cookie_enable"        # config 开关
+
+
+def _new_cookie_value():
+    """生成一个唯一的 cookie 值（用于识别同一浏览器用户）。"""
+    try:
+        import secrets
+        return secrets.token_hex(16)
+    except Exception:
+        import uuid
+        return uuid.uuid4().hex
+
+
+def _cookie_header(value):
+    """根据 cookie 值生成 Set-Cookie 头字符串。"""
+    return "%s=%s; Path=/; HttpOnly; Max-Age=%d" % (
+        COOKIE_NAME, value, COOKIE_MAX_AGE)
+
+
+def _write_config_ini():
+    """Persist current config_data back to CP/config.ini."""
+    try:
+        cp_path = os.path.join(CP_DIR, "config.ini")
+        config = configparser.ConfigParser()
+        # keep existing content to avoid losing other settings
+        config.read(cp_path, encoding="utf-8")
+        if not config.has_section("ConfigProvider"):
+            config.add_section("ConfigProvider")
+        for key, value in config_data.items():
+            config.set("ConfigProvider", key, str(value))
+        with open(cp_path, "w", encoding="utf-8") as f:
+            config.write(f)
+        return True
+    except Exception as e:
+        log_message(f"[WARN] Failed to write config.ini: {e}")
+        return False
+
+
+def _get_banned_list():
+    """Return the current banned_cookies list (deduped, empty items removed)."""
+    raw = config_data.get("banned_cookies", "").strip()
+    items = []
+    for it in raw.split(","):
+        it = it.strip()
+        if it and it not in items:
+            items.append(it)
+    return items
+
+
+def _set_banned_list(items):
+    """Update banned_cookies in config_data and persist to config.ini."""
+    config_data["banned_cookies"] = ",".join(items)
+    _write_config_ini()
+
+
+def console_ban(args):
+    """Console command: ban <cookie>  ban a cookie by value."""
+    if not args:
+        print("Usage: ban <cookie>")
+        print("  Example: ban abc123def456")
+        return
+    cookie = args[0].strip()
+    if not cookie:
+        print("Error: cookie cannot be empty")
+        return
+    items = _get_banned_list()
+    if cookie in items:
+        print(f"Cookie is already banned: {cookie}")
+        return
+    items.append(cookie)
+    _set_banned_list(items)
+    print(f"Cookie banned: {cookie}")
+    log_message(f"[BAN] ban by console: {cookie}")
+
+
+def console_unban(args):
+    """Console command: unban <cookie>  unban a cookie by value."""
+    if not args:
+        print("Usage: unban <cookie>")
+        return
+    cookie = args[0].strip()
+    items = _get_banned_list()
+    if cookie in items:
+        items.remove(cookie)
+        _set_banned_list(items)
+        print(f"Cookie unbanned: {cookie}")
+        log_message(f"[BAN] unban by console: {cookie}")
+    else:
+        print(f"Cookie is not in the banned list: {cookie}")
+
+
+def console_list_banned(args):
+    """Console command: bannedlist  list all currently banned cookies."""
+    items = _get_banned_list()
+    if not items:
+        print("No banned cookies")
+    else:
+        print(f"Currently banned cookies ({len(items)}):")
+        for i, it in enumerate(items, 1):
+            print(f"  {i}. {it}")
+
+
+
 
 
 class Tee:
@@ -133,7 +363,7 @@ def check_nocp_file():
 
 def download_configprovider():
     """Download configprovider.py from GitHub"""
-    configprovider_url = "https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/additional/configprovider.py"
+    configprovider_url = "https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/additional/configprovider+SnapShot2608232151.py"
     configprovider_path = os.path.join(CP_DIR, "configprovider.py")
     
     # Check if .nocp exists
@@ -605,17 +835,23 @@ def start_node():
 
     # Set working directory to independences for Node.js process
     runtime_path = os.path.join(INDEPENDENCES_DIR, "runtime.js")
+    # index.js 作为 worker 参数传给 p2cl 纯模拟 runtime
+    index_path = os.path.join(INDEPENDENCES_DIR, "index.js")
     
     # Check if runtime.js exists before starting
     if not os.path.exists(runtime_path):
         log_message(f"runtime.js not found in {INDEPENDENCES_DIR}")
+        sys.exit(1)
+    if not os.path.exists(index_path):
+        log_message(f"index.js not found in {INDEPENDENCES_DIR}")
         sys.exit(1)
 
     log_message(f"Starting Node.js process from {INDEPENDENCES_DIR}...")
     node = subprocess.Popen(
         [
             "node",
-            runtime_path
+            runtime_path,
+            index_path
         ],
         cwd=INDEPENDENCES_DIR,  # Set working directory to independences
         stdin=subprocess.PIPE,
@@ -756,6 +992,45 @@ class Handler(BaseHTTPRequestHandler):
         request_id += 1
         rid = str(request_id)
 
+        # ===== 防刷：读取并显示 cookie =====
+        cookie = get_request_cookie(self)
+        self._pending_cookie = None   # 若本次无 cookie 且开启分配，则下发新 cookie
+        if not cookie and _cfg_bool(COOKIE_ENV_ENABLE, True):
+            cookie = _new_cookie_value()
+            self._pending_cookie = cookie
+        if cookie:
+            cookie_show = cookie if len(cookie) <= 200 else cookie[:197] + "..."
+            log_message(f"[COOKIE] path={self.path} id={rid} cookie={cookie_show}")
+        else:
+            log_message(f"[COOKIE] path={self.path} id={rid} cookie=(none)")
+
+        # ===== 防刷：ban cookie 检查（动态读取 config_data）=====
+        if is_cookie_banned(cookie):
+            log_message(f"[BAN] cookie banned id={rid} path={self.path}")
+            self.send_response(403)
+            self._send_cookie_if_needed()
+            self.send_header("Content-Type", "text/plain;charset=UTF-8")
+            self.end_headers()
+            try:
+                self.wfile.write(b"Forbidden: cookie banned")
+            except (BrokenPipeError, OSError):
+                pass
+            return
+
+        # ===== 防刷：限流检查（全局 + 按来源标识）=====
+        allowed, status, msg = rate_limit_check(cookie)
+        if not allowed:
+            log_message(f"[RATELIMIT] id={rid} path={self.path} {msg}")
+            self.send_response(status)
+            self._send_cookie_if_needed()
+            self.send_header("Content-Type", "text/plain;charset=UTF-8")
+            self.end_headers()
+            try:
+                self.wfile.write(b"Too Many Requests")
+            except (BrokenPipeError, OSError):
+                pass
+            return
+
         with responses_lock:  # 问题12：使用锁保护
             responses[rid] = None
 
@@ -786,6 +1061,7 @@ class Handler(BaseHTTPRequestHandler):
             # 超时
             log_message(f"[HTTP] Timeout GET {self.path} id={rid}")
             self.send_response(504)
+            self._send_cookie_if_needed()
             self.end_headers()
             try:
                 self.wfile.write(b"Gateway Timeout")
@@ -800,6 +1076,7 @@ class Handler(BaseHTTPRequestHandler):
             result = responses.pop(rid)
 
         self.send_response(result["status"])
+        self._send_cookie_if_needed()
         for k, v in result["headers"].items():
             self.send_header(k, v)
         self.end_headers()
@@ -821,6 +1098,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+    def _send_cookie_if_needed(self):
+        """若本次请求无 cookie 且生成了新 cookie，则在响应头下发 Set-Cookie。
+
+        需在 send_response 之后、end_headers 之前调用。
+        """
+        nc = getattr(self, "_pending_cookie", None)
+        if nc:
+            try:
+                self.send_header("Set-Cookie", _cookie_header(nc))
+            except Exception:
+                pass
+            self._pending_cookie = None
 
 
 def cleanup():
@@ -889,10 +1179,16 @@ def restart_node_only():
     
     # Start Node.js again
     runtime_path = os.path.join(INDEPENDENCES_DIR, "runtime.js")
+    # index.js 作为 worker 参数传给 p2cl 纯模拟 runtime
+    index_path = os.path.join(INDEPENDENCES_DIR, "index.js")
     
     if not os.path.exists(runtime_path):
         log_message(f"runtime.js not found in {INDEPENDENCES_DIR}")
         print("Error: runtime.js not found")
+        return False
+    if not os.path.exists(index_path):
+        log_message(f"index.js not found in {INDEPENDENCES_DIR}")
+        print("Error: index.js not found")
         return False
     
     log_message(f"Starting Node.js process from {INDEPENDENCES_DIR}...")
@@ -900,7 +1196,8 @@ def restart_node_only():
         node = subprocess.Popen(
             [
                 "node",
-                runtime_path
+                runtime_path,
+                index_path
             ],
             cwd=INDEPENDENCES_DIR,
             stdin=subprocess.PIPE,
@@ -1145,6 +1442,9 @@ def console_help():
     print("  stop cp       - Stop CP service only")
     print("  get <key>     - Get configuration value (e.g., get main_working_port)")
     print("  set <k1> <v1> [<k2> <v2> ...] - Set configuration values and restart node")
+    print("  ban <cookie>  - Ban a cookie (persist to config.ini)")
+    print("  unban <cookie> - Unban a cookie")
+    print("  bannedlist    - List currently banned cookies")
     print("=" * 60 + "\n")
 
 
@@ -1153,7 +1453,7 @@ def console_version():
     global CP_VERSION, CP_DISABLED
     
     print("\n" + "=" * 60)
-    print("InjeSecure Python Server Version: v1.0.1stable(2608221736)")
+    print("InjeSecure Python Server Version: SnapShot2608232151")
     if CP_DISABLED:
         print("CP Version: Disabled (.nocp file detected)")
     else:
@@ -1211,7 +1511,11 @@ def console_set(args):
             'enable_key_auth', 'enable_injection', 'my_key', 
             'temp_key_time_limited', 'start_time', 'end_time',
             'injection_config_url', 'whitelist', 
-            'main_working_port', 'cp_working_port'
+            'main_working_port', 'cp_working_port',
+            # 防刷相关
+            'rate_limit_enabled', 'rate_limit_global_perm', 'rate_limit_global_burst',
+            'rate_limit_identity_perm', 'rate_limit_identity_burst',
+            'banned_cookies', 'cookie_enable'
         ]
         
         if key not in known_keys:
@@ -1249,7 +1553,7 @@ def console_set(args):
     
     # If ports changed, we need full restart
     if port_changed:
-        print("\n⚠️  Port configuration changed. Full server restart required.")
+        print("\nPort configuration changed. Full server restart required.")
         print("  The server will now restart completely to apply port changes...")
         log_message("Console: Port changed, performing full server restart...")
         
@@ -1417,6 +1721,12 @@ def console_input_handler():
                     console_get(parts[1])
             elif command == "set":
                 console_set(parts[1:])
+            elif command == "ban":
+                console_ban(parts[1:])
+            elif command == "unban":
+                console_unban(parts[1:])
+            elif command == "bannedlist":
+                console_list_banned(parts[1:])
             else:
                 print(f"Unknown command: {command}")
                 print("Type 'help' for available commands")
