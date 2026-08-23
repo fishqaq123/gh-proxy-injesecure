@@ -98,6 +98,7 @@ const INJECTION_CONFIG_URL = 'https://raw.githubusercontent.com/你的用户名/
 本地 Python 服务模式适合需要完整配置管理能力（即需要本地部署的）的用户，提供配置动态更新、基础进程管理等功能。
 
 > ⚠️ **本模式的本地模拟环境依赖 [p2cl](https://github.com/fishqaq123/p2cl)**（Python-to-Cloudflare Lite）。
+> 原本文件在本仓库内部，但考虑功能性与内容，已单独拆分至p2cl仓库，
 > InjeSecure 的本地运行时 `runtime.js` 由 p2cl 仓库提供并自动下载，
 > 因此无需在本仓库内单独维护 runtime，但运行本地服务时需要能够访问 p2cl。
 
