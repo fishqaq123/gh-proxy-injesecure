@@ -585,8 +585,8 @@ def start_node():
     # Check and download files to independences directory
     if not check_and_download_files():
         log_message("  File download failed. Please follow these steps:")
-        log_message("  > 1. Visit https://github.com/fishqaq123/gh-proxy-injesecure")
-        log_message("  > 2. Download runtime.js and index.js")
+        log_message("  > 1. Download runtime.js from https://github.com/fishqaq123/p2cl")
+        log_message("  > 2. Download index.js from https://github.com/fishqaq123/gh-proxy-injesecure")
         log_message(f"  > 3. Place both files in: {INDEPENDENCES_DIR}")
         log_message("  > 4. Re-start the program")
         log_message("Now exiting.")
