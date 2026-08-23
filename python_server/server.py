@@ -152,7 +152,7 @@ def download_configprovider():
 def check_and_download_files():
     """Check and download missing files to independences directory"""
     files_needed = [
-        ("runtime.js", "https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/runtime/runtime.js"),
+        ("runtime.js", "https://raw.githubusercontent.com/fishqaq123/p2cl/main/runtime.js"),
         ("index.js", "https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/index.js")
     ]
     
