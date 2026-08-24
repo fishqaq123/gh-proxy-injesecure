@@ -137,6 +137,85 @@ function newUrl(urlStr) {
     }
 }
 
+/**
+ * 判断是否为原生 ReadableStream（Web Streams）。
+ * 真 Cloudflare Workers 环境下上游 fetch 返回的 res.body 是原生流；
+ * p2cl 等本地模拟运行时中 body 是 string / Uint8Array，则按非流处理。
+ */
+function isNativeStream(body) {
+    return !!(
+        body &&
+        typeof body === 'object' &&
+        typeof body.pipeTo === 'function' &&
+        typeof body.getReader === 'function'
+    )
+}
+
+/**
+ * 将上游响应体安全地转换为可流式返回的 body。
+ *
+ *  - 原生 ReadableStream：原样返回，保证大文件（Release / Archive / raw）
+ *    全程以流管道边收边发，避免在 Worker 内存中整块缓冲导致 OOM 或卡顿。
+ *  - 其它（string / Uint8Array / 空）：原样返回，兼容 p2cl 等
+ *    不提供 Web Streams 的本地模拟运行时。
+ *
+ * @param {*} body 上游响应体
+ * @returns {Stream|null} 直接交给 new Response(body, ...) 的 body
+ */
+function toStreamBody(body) {
+    return body == null ? null : body
+}
+
+/**
+ * 计算吞吐队列中单个 chunk 的字节大小（用于背压/流控提示）。
+ * 仅原生流场景会用到；非流场景不会被调用。
+ */
+function streamByteSize(chunk) {
+    if (chunk == null) return 0
+    if (typeof chunk === 'string') {
+        return chunk.length
+    }
+    if (ArrayBuffer.isView(chunk)) {
+        return chunk.byteLength
+    }
+    return chunk.length || 0
+}
+
+/**
+ * 把上游响应体封装成一个「确保流式」的 body：
+ *  - 原生 ReadableStream：套一层 identity TransformStream 建立显式流管道
+ *    （pipeThrough），逐 chunk 边收边发，配合 size 提示让运行时按字节
+ *    调度背压，不缓存完整报文。
+ *  - 非流（p2cl 整块 string/Uint8Array）：原样返回，保持本地兼容。
+ */
+function ensureStreamBody(body) {
+    if (!isNativeStream(body)) {
+        return toStreamBody(body)
+    }
+
+    try {
+        const transformer = new TransformStream({
+            // 空闲透传：不缓存、不聚合，实时转发上游每个 chunk
+            transform(chunk, controller) {
+                controller.enqueue(chunk)
+            },
+        }, {
+            highWaterMark: 8,
+            size: streamByteSize,
+        }, {
+            highWaterMark: 8,
+            size: streamByteSize,
+        })
+
+        return body.pipeThrough(transformer)
+    } catch (e) {
+        // 个别运行时对 TransformStream 策略/背压参数支持不完整，
+        // 降级为直接透传上游流，仍保持流式，不阻塞大文件下载。
+        console.error('ensureStreamBody fallback:', e)
+        return body
+    }
+}
+
 addEventListener('fetch', e => {
     const ret = fetchHandler(e)
         .catch(err => makeRes('cfworker error:\n' + err.stack, 502))
@@ -624,7 +703,30 @@ async function proxy(urlObj, reqInit, originalReq) {
         resHdrNew.set('X-Warning', warningHeader)
     }
 
-    return new Response(res.body, {
+    // ============================================================
+    // 响应体流式转发
+    //
+    // res.body 在真 Workers 下是原生 ReadableStream：
+    //   ensureStreamBody 会通过 identity TransformStream 建立流管道，
+    //   逐 chunk 边收边发。大文件（Release / Archive / raw 下载、
+    //   Git clone/push 等）不再整块读入内存，显著降低内存峰值并
+    //   缩短首字节延迟（TTFB）。
+    //
+    // 若 body 是 content-length 已知的原生流，保留该头会让客户端
+    // 及早得知总大小，支持断点续传/进度条；未知长度则退化为 chunked。
+    // ============================================================
+    const body = ensureStreamBody(res.body)
+
+    // content-length 处理：
+    //  - 原生流：删除手动设置的 content-length，交由运行时按 chunked
+    //    流式转发（避免流总长与 header 不一致导致断流/报错）。
+    //  - 非流（p2cl 整块 string/Uint8Array）：保留原 content-length，
+    //    本地模拟时能准确告知客户端总大小。
+    if (isNativeStream(res.body)) {
+        resHdrNew.delete('content-length')
+    }
+
+    return new Response(body, {
         status,
         headers: resHdrNew,
     })
