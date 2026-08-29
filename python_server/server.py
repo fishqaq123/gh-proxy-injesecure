@@ -4,6 +4,7 @@
 import json
 import subprocess
 import threading
+import base64
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.request
 import os
@@ -948,44 +949,115 @@ def send_node(msg):
         log_message(f"[WARN] Failed to send message: {e}")
 
 
+# ============================================================
+# 流式响应通道：Node 端分块推送，HTTP 线程逐块消费
+# ============================================================
+class Channel:
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.msgs = []
+        self.closed = False
+
+    def push(self, msg):
+        with self.cond:
+            self.msgs.append(msg)
+            if msg["type"] in ("response", "response_end"):
+                self.closed = True
+            self.cond.notify_all()
+
+    def pop(self, timeout):
+        with self.cond:
+            deadline = time.time() + timeout
+            while not self.msgs and not self.closed:
+                remain = deadline - time.time()
+                if remain <= 0:
+                    return None, True
+                self.cond.wait(remain)
+            if self.msgs:
+                return self.msgs.pop(0), False
+            return None, False
+
+
 def handle_node(msg):
     if msg["type"] == "fetch":
         log_message(f"[fetch] {msg['url']}")
 
+        streaming = bool(msg.get("stream"))
+        start_sent = False
         try:
             req = urllib.request.Request(msg["url"])
             req.add_header('User-Agent', 'Mozilla/5.0')
 
             with urllib.request.urlopen(req, timeout=20) as r:
-                body = r.read().decode("utf-8", errors="ignore")
-                send_node({
-                    "type": "fetch_response",
-                    "id": msg["id"],
-                    "status": r.status,
-                    "headers": dict(r.headers),
-                    "body": body
-                })
-                log_message(f"[fetch] Completed {msg['url']} status={r.status}")
+                if streaming:
+                    # 流式回包：先发状态+头，再逐块回传
+                    send_node({
+                        "type": "fetch_start",
+                        "id": msg["id"],
+                        "status": r.status,
+                        "headers": dict(r.headers),
+                    })
+                    start_sent = True
+                    while True:
+                        chunk = r.read(65536)
+                        if not chunk:
+                            break
+                        send_node({
+                            "type": "fetch_chunk",
+                            "id": msg["id"],
+                            "chunk": base64.b64encode(chunk).decode("ascii"),
+                            "enc": "base64",
+                        })
+                    send_node({"type": "fetch_end", "id": msg["id"], "ok": True})
+                    log_message(f"[fetch] streamed {msg['url']} status={r.status}")
+                else:
+                    body = r.read().decode("utf-8", errors="ignore")
+                    send_node({
+                        "type": "fetch_response",
+                        "id": msg["id"],
+                        "status": r.status,
+                        "headers": dict(r.headers),
+                        "body": body
+                    })
+                    log_message(f"[fetch] Completed {msg['url']} status={r.status}")
 
         except Exception as e:
             log_message(f"[fetch] Error {msg['url']}: {e}")
             # 问题5：即使出错也尝试发送响应
-            send_node({
-                "type": "fetch_response",
-                "id": msg["id"],
-                "status": 500,
-                "headers": {},
-                "body": str(e)
-            })
+            if streaming:
+                if not start_sent:
+                    send_node({
+                        "type": "fetch_response",
+                        "id": msg["id"],
+                        "status": 502,
+                        "headers": {},
+                        "body": str(e)
+                    })
+                else:
+                    send_node({"type": "fetch_end", "id": msg["id"], "ok": False,
+                               "error": str(e)})
+            else:
+                send_node({
+                    "type": "fetch_response",
+                    "id": msg["id"],
+                    "status": 500,
+                    "headers": {},
+                    "body": str(e)
+                })
 
-    elif msg["type"] == "response":
+    elif msg["type"] in ("response", "response_start", "response_chunk", "response_end"):
         rid = msg["id"]
-        with responses_lock:  # 问题12：使用锁保护
-            if rid in responses:
+        with responses_lock:
+            entry = responses.get(rid)
+            if isinstance(entry, Channel):
+                entry.push(msg)
+            elif entry is not None and msg["type"] == "response":
                 responses[rid] = msg
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"  # 允许 chunked 流式
+
     def do_GET(self):
         global request_id
 
@@ -1032,7 +1104,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         with responses_lock:  # 问题12：使用锁保护
-            responses[rid] = None
+            responses[rid] = Channel()
 
         send_node({
             "type": "request",
@@ -1044,20 +1116,13 @@ class Handler(BaseHTTPRequestHandler):
 
         log_message(f"[HTTP] GET {self.path} id={rid}")
 
-        # 问题4：添加超时机制
-        timeout = 30  # 30秒超时
-        elapsed = 0
-        response_received = False
-        
-        while elapsed < timeout:
-            with responses_lock:  # 问题12：使用锁保护
-                if responses.get(rid) is not None:
-                    response_received = True
-                    break
-            time.sleep(0.1)
-            elapsed += 0.1
-        
-        if not response_received:
+        with responses_lock:  # 问题12：使用锁保护
+            ch = responses[rid]
+
+        # 等第一条消息：response（普通）或 response_start（流式）
+        msg, timed = ch.pop(30)
+
+        if timed or msg is None:
             # 超时
             log_message(f"[HTTP] Timeout GET {self.path} id={rid}")
             self.send_response(504)
@@ -1072,29 +1137,71 @@ class Handler(BaseHTTPRequestHandler):
                     del responses[rid]
             return
 
-        with responses_lock:  # 问题12：使用锁保护
-            result = responses.pop(rid)
+        # 普通响应（Node 端已有完整 body）
+        if msg["type"] == "response":
+            self.send_response(msg["status"])
+            self._send_cookie_if_needed()
+            for k, v in msg["headers"].items():
+                self.send_header(k, v)
+            self.end_headers()
+            # 问题11：使用 errors='replace' 处理编码问题
+            body = msg.get("body", "")
+            if isinstance(body, str):
+                try:
+                    self.wfile.write(body.encode('utf-8', errors='replace'))
+                except (BrokenPipeError, OSError):
+                    pass
+            else:
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, OSError):
+                    pass
+            log_message(f"[HTTP] Response {self.path} status={msg['status']}")
+            with responses_lock:
+                responses.pop(rid, None)
+            return
 
-        self.send_response(result["status"])
+        # 流式响应：先发状态+头，再逐块 chunked 下发
+        self.send_response(msg["status"])
         self._send_cookie_if_needed()
-        for k, v in result["headers"].items():
+        for k, v in msg["headers"].items():
             self.send_header(k, v)
         self.end_headers()
-        
-        # 问题11：使用 errors='replace' 处理编码问题
-        body = result.get("body", "")
-        if isinstance(body, str):
-            try:
-                self.wfile.write(body.encode('utf-8', errors='replace'))
-            except (BrokenPipeError, OSError):
-                pass
-        else:
-            try:
-                self.wfile.write(body)
-            except (BrokenPipeError, OSError):
-                pass
 
-        log_message(f"[HTTP] Response {self.path} status={result['status']}")
+        stream_ok = True
+        try:
+            while True:
+                cmsg, ctimed = ch.pop(15)
+                if cmsg is None:
+                    # 流式空闲超时：中止（客户端看到连接断开）
+                    log_message(f"[HTTP] stream idle timeout {self.path} id={rid}")
+                    break
+                if cmsg["type"] == "response_end":
+                    stream_ok = cmsg.get("ok", True)
+                    break
+                if cmsg["type"] == "response_chunk":
+                    data = cmsg.get("chunk", "")
+                    enc = cmsg.get("enc")
+                    if enc == "base64":
+                        data = base64.b64decode(data)
+                    elif isinstance(data, str):
+                        data = data.encode('utf-8', errors='replace')
+                    try:
+                        self.wfile.write(data)
+                        self.wfile.flush()
+                    except (BrokenPipeError, OSError):
+                        break
+        except (BrokenPipeError, OSError):
+            pass
+
+        # 结束 chunked（空块 + 终止）
+        try:
+            self.wfile.write(b"0\r\n\r\n")
+        except (BrokenPipeError, OSError):
+            pass
+        log_message(f"[HTTP] stream done {self.path} id={rid} ok={stream_ok}")
+        with responses_lock:
+            responses.pop(rid, None)
 
     def log_message(self, *args):
         pass
@@ -1453,7 +1560,7 @@ def console_version():
     global CP_VERSION, CP_DISABLED
     
     print("\n" + "=" * 60)
-    print("InjeSecure Python Server Version: SnapShot2608232151")
+    print("InjeSecure Python Server Version: SnapShot2608292337")
     if CP_DISABLED:
         print("CP Version: Disabled (.nocp file detected)")
     else:
