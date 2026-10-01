@@ -2,20 +2,19 @@
 
 /**
  * ============================================================
- *  InjeSecure — gh-proxy 增强分支 · 注入框架 + 统一鉴权
- *  基于 gh-proxy 原版，增加注入框架、统一鉴权、远程配置支持
+ * InjeSecure — gh-proxy 增强分支
+ * 注入框架 + 统一鉴权 + 大文件流式传输
  * ============================================================
  *
- *  static files (404.html, sw.js, conf.js)
+ * static files (404.html, sw.js, conf.js)
  */
 
 // ============================================================
-// 静态资源地址（原项目）
+// 静态资源地址
 // ============================================================
 const ASSET_URL = 'https://hunshcn.github.io/gh-proxy/'
 const PREFIX = '/'
 
-// jsDelivr 开关
 const Config = {
     jsdelivr: 0
 }
@@ -35,31 +34,30 @@ const PREFLIGHT_INIT = {
 // ============================================================
 // 功能开关
 // ============================================================
-// 是否启用 KEY 鉴权（true = 启用，false = 禁用）
 const ENABLE_KEY_AUTH = true
-
-// 是否启用远程注入功能（true = 启用，false = 禁用）
 const ENABLE_INJECTION = true
 
-// 远程注入配置文件地址（请替换为你的 GitHub 仓库地址）
-// 如果 ENABLE_INJECTION = false，此配置无效  此链接为仓库默认注入地址
-const INJECTION_CONFIG_URL = 'https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/injections.json'
+/**
+ * 浏览器界面默认使用对话框询问 key
+ * key 参数保留，作为退回与自动脚本支持
+ */
+const ENABLE_KEY_DIALOG = true
+
+const INJECTION_CONFIG_URL =
+    'https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/injections.json'
 
 // ============================================================
-// KEY 配置区域（仅当 ENABLE_KEY_AUTH = true 时生效）
+// KEY 配置
 // ============================================================
-// 主 KEY（请替换为你自己的密钥）
 const MY_KEY = 'Set-your-own-key'
 
-// 临时 KEY（请替换为你自己的密钥）
 const TEMP_KEY_TIME_LIMITED = 'Set-your-own-key'
 
-// 临时 KEY 的有效期（北京时间）
 const START_TIME = '2000-01-01 00:00:00'
 const END_TIME = '2000-01-01 00:00:00'
 
 // ============================================================
-// 最小回退注入配置（当远程注入拉取失败或 ENABLE_INJECTION = false 时使用）
+// 最小回退注入配置
 // ============================================================
 const FALLBACK_INJECTIONS = [
     {
@@ -95,7 +93,6 @@ const FALLBACK_INJECTIONS = [
   }
 </style>
 <div id="injection-badge">✓ 注入生效</div>
-<!-- InjeSecure 仓库链接 -->
 <div style="text-align:center;padding:12px 0 6px 0;font-size:12px;color:#888;border-top:1px solid rgba(255,255,255,0.05);margin-top:10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;opacity:0.6;">
     <span>Powered by</span>
     <a href="https://github.com/fishqaq123/gh-proxy-injesecure" target="_blank" rel="noopener" style="color:#888;text-decoration:none;font-weight:400;margin-left:4px;">
@@ -137,12 +134,315 @@ function newUrl(urlStr) {
     }
 }
 
+/**
+ * 判断是否为原生 ReadableStream
+ */
+function isNativeStream(body) {
+    return !!(
+        body &&
+        typeof body === 'object' &&
+        typeof body.pipeTo === 'function' &&
+        typeof body.getReader === 'function'
+    )
+}
+
+/**
+ * 转换响应体
+ */
+function toStreamBody(body) {
+    return body == null ? null : body
+}
+
+/**
+ * 计算 chunk 字节大小
+ */
+function streamByteSize(chunk) {
+    if (chunk == null) return 0
+
+    if (typeof chunk === 'string') {
+        return new TextEncoder().encode(chunk).byteLength
+    }
+
+    if (ArrayBuffer.isView(chunk)) {
+        return chunk.byteLength
+    }
+
+    if (chunk instanceof ArrayBuffer) {
+        return chunk.byteLength
+    }
+
+    return chunk.length || 0
+}
+
+/**
+ * 确保流式转发
+ */
+function ensureStreamBody(body) {
+    if (!isNativeStream(body)) {
+        return toStreamBody(body)
+    }
+
+    try {
+        const transformer = new TransformStream(
+            {
+                transform(chunk, controller) {
+                    controller.enqueue(chunk)
+                },
+            },
+            {
+                highWaterMark: 8,
+                size: streamByteSize,
+            },
+            {
+                highWaterMark: 8,
+                size: streamByteSize,
+            }
+        )
+
+        return body.pipeThrough(transformer)
+    } catch (e) {
+        console.error('ensureStreamBody fallback:', e)
+        return body
+    }
+}
+
+/**
+ * 判断请求是否为浏览器页面导航
+ * 用于决定是走对话框询问 key，还是走 401/403 回退
+ */
+function isBrowserNavigation(req) {
+    const accept = req.headers.get('Accept') || ''
+    const secFetchMode = req.headers.get('Sec-Fetch-Mode') || ''
+    const secFetchDest = req.headers.get('Sec-Fetch-Dest') || ''
+
+    // 明确是页面导航
+    if (secFetchMode === 'navigate' && secFetchDest === 'document') {
+        return true
+    }
+
+    // 浏览器地址栏直接打开时，Accept 里会包含 text/html
+    if (req.method === 'GET' && accept.includes('text/html')) {
+        return true
+    }
+
+    return false
+}
+
+/**
+ * 构造“对话框询问 key”页面
+ * 页面加载后自动弹出对话框，提交后带 key 重新跳转
+ */
+function buildKeyDialogPage(reqUrl, reason = 'missing') {
+    const targetUrl = new URL(reqUrl)
+    // 移除旧的 key，避免干扰
+    targetUrl.searchParams.delete('key')
+    const targetHref = targetUrl.toString()
+
+    const titleText = reason === 'invalid'
+        ? '密钥无效，请重新输入'
+        : '需要访问密钥'
+
+    const msgText = reason === 'invalid'
+        ? '提供的 key 无效，请重新输入。'
+        : '此代理需要输入访问密钥 (key)。'
+
+    // 注意：脚本中的 `${}` 会与模板字符串冲突，
+    // 这里使用字符串拼接，避免转义问题。
+    const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${titleText}</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    padding: 24px;
+  }
+  .card {
+    width: 100%;
+    max-width: 420px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 28px 24px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  .card h1 {
+    font-size: 18px;
+    margin: 0 0 8px;
+    color: #f0f6fc;
+    font-weight: 600;
+  }
+  .card p {
+    font-size: 13px;
+    line-height: 1.6;
+    color: #8b949e;
+    margin: 0 0 20px;
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    margin-bottom: 6px;
+    color: #c9d1d9;
+  }
+  input[type="password"], input[type="text"] {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 14px;
+    color: #f0f6fc;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input:focus {
+    border-color: #2ea043;
+    box-shadow: 0 0 0 3px rgba(46,160,67,0.25);
+  }
+  .row {
+    display: flex;
+    gap: 10px;
+    margin-top: 18px;
+  }
+  button {
+    flex: 1;
+    padding: 10px 14px;
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: 8px;
+    border: 1px solid #30363d;
+    background: #21262d;
+    color: #c9d1d9;
+    cursor: pointer;
+    transition: background .15s, border-color .15s;
+  }
+  button:hover { background: #30363d; }
+  button.primary {
+    background: #238636;
+    border-color: #2ea043;
+    color: #fff;
+  }
+  button.primary:hover { background: #2ea043; }
+  .error {
+    color: #f85149;
+    font-size: 12px;
+    margin-top: 10px;
+    display: none;
+  }
+  .hint {
+    font-size: 11px;
+    color: #6e7681;
+    margin-top: 16px;
+    line-height: 1.5;
+  }
+  .hint code {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>${titleText}</h1>
+  <p>${msgText}</p>
+  <form id="keyForm" autocomplete="off">
+    <label for="keyInput">访问密钥</label>
+    <input id="keyInput" type="password" placeholder="请输入 key" autofocus>
+    <div class="error" id="errMsg">请输入有效的 key</div>
+    <div class="row">
+      <button type="button" id="cancelBtn">取消</button>
+      <button type="submit" class="primary" id="submitBtn">确认</button>
+    </div>
+  </form>
+  <div class="hint">
+    也可直接在 URL 上附加 <code>?key=你的密钥</code>，
+    便于脚本或书签使用。
+  </div>
+</div>
+<script>
+(function () {
+  var target = ${JSON.stringify(targetHref)};
+  var form = document.getElementById('keyForm');
+  var input = document.getElementById('keyInput');
+  var errMsg = document.getElementById('errMsg');
+
+  // 页面加载后自动聚焦输入框
+  setTimeout(function () { input.focus(); }, 50);
+
+  function go(k) {
+    if (!k) {
+      errMsg.style.display = 'block';
+      input.focus();
+      return;
+    }
+    var u = new URL(target);
+    u.searchParams.set('key', k);
+    window.location.replace(u.toString());
+  }
+
+  form.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var v = input.value.trim();
+    if (!v) {
+      errMsg.style.display = 'block';
+      input.focus();
+      return;
+    }
+    go(v);
+  });
+
+  document.getElementById('cancelBtn').addEventListener('click', function () {
+    if (window.history.length > 1) {
+      window.history.back();
+    } else {
+      window.location.href = 'about:blank';
+    }
+  });
+
+  input.addEventListener('input', function () {
+    errMsg.style.display = 'none';
+  });
+})();
+</script>
+</body>
+</html>`
+
+    return new Response(html, {
+        status: 200,
+        headers: {
+            'Content-Type': 'text/html; charset=UTF-8',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'access-control-allow-origin': '*'
+        }
+    })
+}
+
+// ============================================================
+// Fetch 入口
+// ============================================================
 addEventListener('fetch', e => {
     const ret = fetchHandler(e)
         .catch(err => makeRes('cfworker error:\n' + err.stack, 502))
+
     e.respondWith(ret)
 })
 
+// ============================================================
+// URL 检查
+// ============================================================
 function checkUrl(u) {
     for (let i of [exp1, exp2, exp3, exp4, exp5, exp6]) {
         if (u.search(i) === 0) {
@@ -152,20 +452,20 @@ function checkUrl(u) {
     return false
 }
 
-/**
- * 将北京时间字符串转换为 UTC 时间戳 (毫秒)
- * @param {string} beijingTimeStr 格式: 'YYYY-MM-DD HH:MM:SS'
- */
+// ============================================================
+// 北京时间转 UTC
+// ============================================================
 function beijingToUTC(beijingTimeStr) {
     const [datePart, timePart] = beijingTimeStr.split(' ')
     const [year, month, day] = datePart.split('-').map(Number)
     const [hour, minute, second] = timePart.split(':').map(Number)
+
     return Date.UTC(year, month - 1, day, hour - 8, minute, second)
 }
 
-/**
- * 检查临时 KEY 是否在有效期内
- */
+// ============================================================
+// 临时 KEY 有效期检查
+// ============================================================
 function checkTimeLimitedKey() {
     const now = Date.now()
     const start = beijingToUTC(START_TIME)
@@ -174,43 +474,54 @@ function checkTimeLimitedKey() {
     if (now < start) {
         return { valid: false, reason: 'not_started' }
     }
+
     if (now > end) {
         return { valid: false, reason: 'expired' }
     }
 
     const remainingMs = end - now
     const remainingDays = remainingMs / (1000 * 60 * 60 * 24)
+
     return { valid: true, remainingDays }
 }
 
-/**
- * 密钥校验函数（仅当 ENABLE_KEY_AUTH = true 时生效）
- * @param {string} key - 待验证的密钥
- * @returns {Object} { valid: boolean, error: string, status: number, headers: Object, warning?: string }
- */
+// ============================================================
+// KEY 校验
+// ============================================================
 function validateKey(key) {
-    // 检查主 KEY
     if (key === MY_KEY) {
         return { valid: true }
     }
 
-    // 检查临时 KEY
     if (key === TEMP_KEY_TIME_LIMITED) {
         const timeCheck = checkTimeLimitedKey()
+
         if (timeCheck.valid) {
             const result = { valid: true }
+
             if (timeCheck.remainingDays < 3) {
-                result.warning = `密钥剩余 ${Math.ceil(timeCheck.remainingDays)} 天过期`
+                result.warning =
+                    `密钥剩余 ${Math.ceil(timeCheck.remainingDays)} 天过期`
             }
+
             return result
         }
+
         if (timeCheck.reason === 'expired') {
-            return { valid: false, status: 403, error: 'Out Of Date' }
+            return {
+                valid: false,
+                status: 403,
+                error: 'Out Of Date'
+            }
         }
-        return { valid: false, status: 403, error: 'Forbidden' }
+
+        return {
+            valid: false,
+            status: 403,
+            error: 'Forbidden'
+        }
     }
 
-    // 密钥无效
     return {
         valid: false,
         status: 403,
@@ -218,29 +529,78 @@ function validateKey(key) {
     }
 }
 
-/**
- * 对 HTML 内容执行注入
- * @param {string} html - 原始 HTML 内容
- * @param {Array} injections - 注入配置数组
- * @returns {string} 注入后的 HTML
- */
+// ============================================================
+// 提取请求中的 KEY
+// 支持：Authorization Bearer / Basic、URL ?key=
+// ============================================================
+function extractKey(req, reqHdrRaw) {
+    let key = null
+    const authHeader = reqHdrRaw.get('Authorization')
+
+    // Bearer Auth
+    if (authHeader && /^Bearer\s+/i.test(authHeader)) {
+        key = authHeader.replace(/^Bearer\s+/i, '').trim()
+    }
+
+    // Basic Auth
+    if (!key && authHeader && /^Basic\s+/i.test(authHeader)) {
+        try {
+            const encoded = authHeader
+                .replace(/^Basic\s+/i, '')
+                .trim()
+
+            const decoded = atob(encoded)
+            const separator = decoded.indexOf(':')
+
+            if (separator !== -1) {
+                key = decoded.slice(separator + 1)
+            }
+        } catch (e) {
+            console.error('Basic Auth parse failed:', e)
+            key = null
+        }
+    }
+
+    // URL ?key=
+    if (!key) {
+        const url = new URL(req.url)
+        const urlKey = url.searchParams.get('key')
+
+        if (urlKey) {
+            key = urlKey
+        }
+    }
+
+    return key
+}
+
+// ============================================================
+// HTML 注入
+// ============================================================
 function applyInjections(html, injections) {
     let result = html
 
     for (const inj of injections) {
         switch (inj.position) {
             case 'afterBody':
-                result = result.replace(/<body[^>]*>/, match => match + inj.html)
+                result = result.replace(
+                    /<body[^>]*>/,
+                    match => match + inj.html
+                )
                 break
+
             case 'beforeHeadEnd':
-                result = result.replace('</head>', `${inj.html}</head>`)
+                result = result.replace(
+                    '</head>',
+                    `${inj.html}</head>`
+                )
                 break
+
             default:
                 break
         }
     }
 
-    // ====== 在所有注入完成后，追加仓库链接 ======
     const footerLink = `
 <!-- InjeSecure 仓库链接 -->
 <div style="text-align:center;padding:12px 0 6px 0;font-size:12px;color:#888;border-top:1px solid rgba(255,255,255,0.05);margin-top:10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;opacity:0.6;">
@@ -254,15 +614,15 @@ function applyInjections(html, injections) {
     </a>
 </div>
 `
+
     result = result.replace('</body>', `${footerLink}</body>`)
 
     return result
 }
 
-/**
- * 从远程拉取注入配置
- * @returns {Promise<Array>} 注入配置数组
- */
+// ============================================================
+// 远程注入配置
+// ============================================================
 async function fetchRemoteInjections() {
     try {
         const response = await fetch(INJECTION_CONFIG_URL, {
@@ -279,9 +639,9 @@ async function fetchRemoteInjections() {
 
         if (data && Array.isArray(data.injections)) {
             return data.injections
-        } else {
-            throw new Error('无效的 JSON 结构：缺少 "injections" 数组')
         }
+
+        throw new Error('无效的 JSON 结构：缺少 "injections" 数组')
     } catch (error) {
         console.error('拉取远程注入配置失败:', error)
         return null
@@ -291,45 +651,54 @@ async function fetchRemoteInjections() {
 // ============================================================
 // 主请求处理器
 // ============================================================
-
 async function fetchHandler(e) {
     const req = e.request
     const urlStr = req.url
     const urlObj = new URL(urlStr)
+
     let path = urlObj.searchParams.get('q')
     let remoteInjections = null
 
     if (path) {
-        return Response.redirect('https://' + urlObj.host + PREFIX + path, 301)
+        // 兼容 ?q= 形式时，一并透传 key
+        const redirectUrl = new URL('https://' + urlObj.host + PREFIX + path)
+        const key = urlObj.searchParams.get('key')
+        if (key) {
+            redirectUrl.searchParams.set('key', key)
+        }
+        return Response.redirect(redirectUrl.toString(), 301)
     }
 
-    path = urlObj.href.slice(urlObj.origin.length + PREFIX.length).replace(/^https?:\/+/, 'https://')
+    path = urlObj.href
+        .slice(urlObj.origin.length + PREFIX.length)
+        .replace(/^https?:\/+/, 'https://')
 
-    // ========== 首页注入处理 ==========
+    // 首页注入处理
     if (urlObj.pathname === '/' || urlObj.pathname === PREFIX) {
-        // 检查是否为兼容模式（通过 ?compat=1 参数），绕过所有注入
         if (urlObj.searchParams.has('compat')) {
             return fetch(ASSET_URL)
         }
 
-        // 如果注入功能已禁用，直接返回上游页面
         if (!ENABLE_INJECTION) {
             return fetch(ASSET_URL)
         }
 
-        // 尝试拉取远程注入配置
         try {
             remoteInjections = await fetchRemoteInjections()
         } catch (e) {
-            // 拉取失败，使用降级方案
+            // 使用回退注入配置
         }
 
         const resp = await fetch(ASSET_URL)
         const html = await resp.text()
-        const injections = (remoteInjections && Array.isArray(remoteInjections))
-            ? remoteInjections
-            : FALLBACK_INJECTIONS
+
+        const injections =
+            remoteInjections && Array.isArray(remoteInjections)
+                ? remoteInjections
+                : FALLBACK_INJECTIONS
+
         const injectedHtml = applyInjections(html, injections)
+
         return new Response(injectedHtml, {
             headers: {
                 'Content-Type': 'text/html; charset=UTF-8',
@@ -338,13 +707,24 @@ async function fetchHandler(e) {
             }
         })
     }
-    // ========== 注入结束 ==========
 
-    if (path.search(exp1) === 0 || path.search(exp5) === 0 || path.search(exp6) === 0 || path.search(exp3) === 0) {
+    // 代理路由
+    if (
+        path.search(exp1) === 0 ||
+        path.search(exp5) === 0 ||
+        path.search(exp6) === 0 ||
+        path.search(exp3) === 0
+    ) {
         return httpHandler(req, path)
     } else if (path.search(exp2) === 0) {
         if (Config.jsdelivr) {
-            const newUrl = path.replace('/blob/', '@').replace(/^(?:https?:\/\/)?github\.com/, 'https://cdn.jsdelivr.net/gh')
+            const newUrl = path
+                .replace('/blob/', '@')
+                .replace(
+                    /^(?:https?:\/\/)?github\.com/,
+                    'https://cdn.jsdelivr.net/gh'
+                )
+
             return Response.redirect(newUrl, 302)
         } else {
             path = path.replace('/blob/', '/raw/')
@@ -352,8 +732,13 @@ async function fetchHandler(e) {
         }
     } else if (path.search(exp4) === 0) {
         if (Config.jsdelivr) {
-            const newUrl = path.replace(/(?<=com\/.+?\/.+?)\/(.+?\/)/, '@$1')
-                .replace(/^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com/, 'https://cdn.jsdelivr.net/gh')
+            const newUrl = path
+                .replace(/(?<=com\/.+?\/.+?)\/(.+?\/)/, '@$1')
+                .replace(
+                    /^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com/,
+                    'https://cdn.jsdelivr.net/gh'
+                )
+
             return Response.redirect(newUrl, 302)
         } else {
             return httpHandler(req, path)
@@ -364,9 +749,8 @@ async function fetchHandler(e) {
 }
 
 // ============================================================
-// HTTP 处理器（鉴权 + 路由）
+// HTTP 处理器：鉴权 + 路由
 // ============================================================
-
 function httpHandler(req, pathname) {
     const reqHdrRaw = req.headers
 
@@ -396,75 +780,27 @@ function httpHandler(req, pathname) {
         })
     }
 
-    // ============================================================
     // KEY 鉴权
-    // ============================================================
-    let authenticatedByBasic = false
-
     if (ENABLE_KEY_AUTH) {
-        let key = null
-        const authHeader = reqHdrRaw.get('Authorization')
+        const key = extractKey(req, reqHdrRaw)
 
-        // ========================================================
-        // 1. Bearer Auth
-        // ========================================================
-        if (authHeader && /^Bearer\s+/i.test(authHeader)) {
-            key = authHeader.replace(/^Bearer\s+/i, '').trim()
-        }
-
-        // ========================================================
-        // 2. Basic Auth
-        // Git 兼容模式：
-        //   username = 任意
-        //   password = GHProxy KEY
-        // ========================================================
-        if (
-            !key &&
-            authHeader &&
-            /^Basic\s+/i.test(authHeader)
-        ) {
-            try {
-                const encoded = authHeader.replace(/^Basic\s+/i, '').trim()
-                const decoded = atob(encoded)
-                const separator = decoded.indexOf(':')
-
-                if (separator !== -1) {
-                    // 用户名忽略
-                    // 密码作为 KEY
-                    key = decoded.slice(separator + 1)
-                    authenticatedByBasic = true
-                }
-            } catch (e) {
-                console.error('Basic Auth parse failed:', e)
-                key = null
-            }
-        }
-
-        // ========================================================
-        // 3. URL ?key=
-        // ========================================================
-        if (!key) {
-            const url = new URL(req.url)
-            const urlKey = url.searchParams.get('key')
-
-            if (urlKey) {
-                key = urlKey
-            }
-        }
-
-        // ========================================================
         // Git 请求识别
-        // ========================================================
         const isGit =
             urlStr.includes('.git') ||
             urlStr.includes('git-upload-pack') ||
             urlStr.includes('git-receive-pack') ||
             urlStr.includes('/info/refs')
 
-        // ========================================================
-        // 没有 KEY
-        // ========================================================
+        // 是否为浏览器页面导航
+        const isNav = ENABLE_KEY_DIALOG && isBrowserNavigation(req)
+
+        // 缺少 KEY
         if (!key) {
+            // 浏览器页面导航：走对话框询问
+            if (isNav && !isGit) {
+                return buildKeyDialogPage(req.url, 'missing')
+            }
+
             if (isGit) {
                 return new Response(
                     'Unauthorized: Git authentication required',
@@ -489,37 +825,23 @@ function httpHandler(req, pathname) {
             )
         }
 
-        // ========================================================
-        // KEY 验证
-        // ========================================================
+        // 验证 KEY
         const validationResult = validateKey(key)
 
         if (!validationResult.valid) {
-            return new Response(
-                validationResult.error,
-                {
-                    status: validationResult.status || 403,
-                    headers: validationResult.headers || {}
-                }
-            )
-        }
+            // 浏览器页面导航且 key 无效：走对话框重新询问
+            if (isNav && !isGit) {
+                return buildKeyDialogPage(req.url, 'invalid')
+            }
 
-        // ========================================================
-        // 临时 KEY 警告（仅记录，不向上游泄露）
-        // ========================================================
-        if (validationResult.warning) {
-            // 这里暂时不放进 GitHub 请求头
-            // 避免任何鉴权相关信息向上游泄露
+            return new Response(validationResult.error, {
+                status: validationResult.status || 403,
+                headers: validationResult.headers || {}
+            })
         }
     }
 
-    // ============================================================
-    // 构造真正发往 GitHub 的请求头
-    //
-    // 注意：
-    // 不再直接使用 req.headers
-    // 明确禁止 Authorization / Proxy-Authorization
-    // ============================================================
+    // 构造发往 GitHub 的请求头
     const reqHdrNew = new Headers()
 
     for (const [name, value] of reqHdrRaw.entries()) {
@@ -535,9 +857,7 @@ function httpHandler(req, pathname) {
         reqHdrNew.set(name, value)
     }
 
-    // ============================================================
     // URL 处理
-    // ============================================================
     if (urlStr.search(/^https?:\/\//) !== 0) {
         urlStr = 'https://' + urlStr
     }
@@ -545,60 +865,92 @@ function httpHandler(req, pathname) {
     const urlObj = newUrl(urlStr)
 
     if (!urlObj) {
-        return new Response(
-            'Invalid URL',
-            {
-                status: 400
-            }
-        )
+        return new Response('Invalid URL', {
+            status: 400
+        })
     }
 
-    // ============================================================
-    // 发往 GitHub
-    // ============================================================
+    // 请求配置
     const reqInit = {
         method: req.method,
         headers: reqHdrNew,
         redirect: 'manual',
-        body: req.body
+        body: ['GET', 'HEAD'].includes(req.method)
+            ? undefined
+            : req.body
     }
 
     return proxy(urlObj, reqInit, req)
 }
 
 // ============================================================
-// 代理函数
+// 代理函数：大文件流式转发及长度处理
 // ============================================================
-
 async function proxy(urlObj, reqInit, originalReq) {
     const res = await fetch(urlObj.href, reqInit)
-    const resHdrOld = res.headers
-    const resHdrNew = new Headers(resHdrOld)
 
+    const resHdrNew = new Headers(res.headers)
     const status = res.status
 
+    // 重定向处理
     if (resHdrNew.has('location')) {
-        let _location = resHdrNew.get('location')
-        if (checkUrl(_location)) {
-            resHdrNew.set('location', PREFIX + _location)
+        const location = resHdrNew.get('location')
+
+        if (checkUrl(location)) {
+            // 重定向时保留 key，避免用户再次输入
+            const key = extractKey(originalReq, originalReq.headers)
+            let newLocation = PREFIX + location
+
+            if (key) {
+                const sep = newLocation.includes('?') ? '&' : '?'
+                newLocation = newLocation + sep + 'key=' + encodeURIComponent(key)
+            }
+
+            resHdrNew.set('location', newLocation)
         } else {
             reqInit.redirect = 'follow'
-            return proxy(newUrl(_location), reqInit, originalReq)
+            return proxy(newUrl(location), reqInit, originalReq)
         }
     }
 
+    // CORS
     resHdrNew.set('access-control-expose-headers', '*')
     resHdrNew.set('access-control-allow-origin', '*')
 
+    // 移除安全策略头
     resHdrNew.delete('content-security-policy')
     resHdrNew.delete('content-security-policy-report-only')
     resHdrNew.delete('clear-site-data')
 
-    const contentLength = res.headers.get('content-length')
-    const country = originalReq.headers.get('CF-IPCountry') || 'XX'
+    // ========================================================
+    // 文件长度处理
+    // ========================================================
+    const contentLength = resHdrNew.get('content-length')
+    const contentRange = resHdrNew.get('content-range')
+
+    // Content-Range 示例：
+    // bytes 0-999/5000
+    // 其中 5000 是整个文件长度。
+    if (contentRange) {
+        const match = contentRange.match(/\/(\d+)$/)
+
+        if (match) {
+            resHdrNew.set('X-File-Total-Length', match[1])
+        }
+    } else if (contentLength) {
+        resHdrNew.set('X-File-Total-Length', contentLength)
+    }
+
+    // ========================================================
+    // 缓存策略
+    // ========================================================
+    const country =
+        originalReq.headers.get('CF-IPCountry') || 'XX'
 
     if (contentLength && country !== 'CN') {
-        const fileSizeMB = parseInt(contentLength, 10) / (1024 * 1024)
+        const fileSizeMB =
+            parseInt(contentLength, 10) / (1024 * 1024)
+
         let cacheMaxAge = null
 
         if (fileSizeMB > 95 && fileSizeMB <= 105) {
@@ -612,19 +964,44 @@ async function proxy(urlObj, reqInit, originalReq) {
         }
 
         if (cacheMaxAge !== null) {
-            resHdrNew.set('Cache-Control', `public, max-age=${cacheMaxAge}`)
-            resHdrNew.set('X-Cache-Policy', `country=${country}_size=${fileSizeMB.toFixed(2)}MB_age=${cacheMaxAge}`)
+            resHdrNew.set(
+                'Cache-Control',
+                `public, max-age=${cacheMaxAge}`
+            )
+
+            resHdrNew.set(
+                'X-Cache-Policy',
+                `country=${country}_size=${fileSizeMB.toFixed(2)}MB_age=${cacheMaxAge}`
+            )
         }
     } else if (country === 'CN') {
         resHdrNew.set('X-Cache-Policy', 'direct-china')
     }
 
+    // 警告头
     const warningHeader = originalReq.headers.get('X-Warning')
+
     if (warningHeader) {
         resHdrNew.set('X-Warning', warningHeader)
     }
 
-    return new Response(res.body, {
+    // ========================================================
+    // 响应体处理
+    // ========================================================
+
+    // HEAD、204、304 响应不应携带响应体
+    const noBody =
+        originalReq.method === 'HEAD' ||
+        status === 204 ||
+        status === 304
+
+    // 继续使用原生 ReadableStream，避免将大文件
+    // 整体读取到内存中。
+    const body = noBody
+        ? null
+        : ensureStreamBody(res.body)
+
+    return new Response(body, {
         status,
         headers: resHdrNew,
     })
