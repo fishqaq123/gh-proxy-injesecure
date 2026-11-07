@@ -37,7 +37,7 @@ const ENABLE_INJECTION = true
 const ENABLE_KEY_DIALOG = true
 
 const INJECTION_CONFIG_URL =
-    'https://raw.githubusercontent.com/fishqaq123/Injections-For-My-GHproxy/master/injections.json'
+    'https://raw.githubusercontent.com/fishqaq123/gh-proxy-injesecure/master/injections.json'
 
 // ============================================================
 // KEY 配置
